@@ -1,0 +1,53 @@
+# TLS reverse proxy in front of the controller, for the Docker Compose
+# path. Proxies to the "controller" service by name — containers reach
+# each other over the compose network, not localhost.
+#
+# ---------------------------------------------------------------------
+# DEFAULT: self-signed certificates, no DNS or public address needed.
+#
+# `local_certs` makes Caddy's own local CA the issuer for every site
+# here, and `on_demand` mints a certificate for whatever name the client
+# actually asks for — https://localhost/, https://192.168.1.50/,
+# https://kite.lab/ all work off the same config with nothing to
+# configure. That matters for a lab controller, which people reach by IP
+# as often as by name.
+#
+# Both directives are required. `tls internal` alone, on a site address
+# with no hostname, leaves the issuer with no subject name to put in a
+# certificate: every TLS handshake then fails with "tlsv1 alert internal
+# error" before any HTTP is exchanged, which makes the site unreachable
+# rather than merely untrusted.
+#
+# Browsers do warn on first visit, because the CA issuing these
+# certificates is local and not one they trust. That part is expected.
+# Agents pointing at this controller's /repo path for
+# `dnf install kite-agent` need `sslverify=0` to match — see
+# controller/README.md.
+# ---------------------------------------------------------------------
+{
+	local_certs
+}
+
+:443 {
+	tls internal {
+		on_demand
+	}
+	reverse_proxy controller:8000
+}
+
+# ---------------------------------------------------------------------
+# REAL DOMAIN instead: if you have DNS pointing at this host, replace
+# EVERYTHING above with the two lines below and Caddy handles Let's
+# Encrypt automatically. Publish port 80 as well in docker-compose.yml
+# (used once for the ACME HTTP-01 challenge), then Caddy redirects
+# 80 -> 443 itself.
+#
+# Delete the `local_certs` block when you do — leaving it in forces the
+# local CA and you'll get a self-signed certificate for your real
+# domain, which is not what you want and looks like Let's Encrypt
+# failing.
+#
+# kite.example.com {
+# 	reverse_proxy controller:8000
+# }
+# ---------------------------------------------------------------------

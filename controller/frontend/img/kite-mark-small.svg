@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="kite">
+  <!-- The simplified mark for 24 px and below: solid ribbon, no highlight, no hatch. -->
+  <rect width="24" height="24" rx="5" fill="#0A100E"/>
+  <path d="M12 12C5 5 5 1.8 12 1.8C19 1.8 19 5 12 12C5 19 5 22.2 12 22.2C19 22.2 19 19 12 12" fill="none" stroke="#3FA07D" stroke-width="3.6" stroke-linecap="round"/>
+  <path d="M10 10L14 14" stroke="#0A100E" stroke-width="5.8"/>
+  <path d="M9.6 9.6L14.4 14.4" stroke="#3FA07D" stroke-width="3.6"/>
+</svg>

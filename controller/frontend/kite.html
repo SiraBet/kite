@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>kite — patch console</title>
+<meta name="description" content="kite — cross-platform patch orchestration console">
+<link rel="icon" type="image/svg+xml" href="/ui/img/kite-mark-small.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui/css/app.css">
+</head>
+<body>
+<div class="app">
+  <nav class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-name">kite</div>
+        <div class="brand-sub">fleet patch control</div>
+      </div>
+    </div>
+    <div id="nav"></div>
+    <div class="sidebar-footer" id="user-box">
+    </div>
+  </nav>
+  <main class="main">
+    <div id="view"></div>
+  </main>
+</div>
+<div id="toast-stack" class="toast-stack"></div>
+<div id="modal-root"></div>
+
+<!--
+  Load order matters and is deliberate. These are plain classic scripts
+  sharing one global scope — no bundler, no modules, no build step, which
+  is the same trade the rest of this project makes. Function declarations
+  hoist, but the top-level `const`s (state, api, ICONS, navItems, …) do
+  not: a file that reads one must come after the file that defines it.
+  app.js is last because it calls into every view.
+
+  tests/test_frontend_render.py reads this list, in this order, to load
+  the console into a real JS engine — so a file added here without being
+  added there (or vice versa) shows up as a failing test rather than a
+  blank page.
+-->
+<script src="/ui/js/api.js"></script>
+<script src="/ui/js/state.js"></script>
+<script src="/ui/js/helpers.js"></script>
+<script src="/ui/js/toasts.js"></script>
+<script src="/ui/js/auth.js"></script>
+<script src="/ui/js/nav.js"></script>
+<script src="/ui/js/loaders.js"></script>
+<script src="/ui/js/host-status.js"></script>
+<script src="/ui/js/views/home.js"></script>
+<script src="/ui/js/views/fleet.js"></script>
+<script src="/ui/js/views/host-detail.js"></script>
+<script src="/ui/js/views/run.js"></script>
+<script src="/ui/js/views/defs.js"></script>
+<script src="/ui/js/views/schedules.js"></script>
+<script src="/ui/js/views/scripts.js"></script>
+<script src="/ui/js/views/audit.js"></script>
+<script src="/ui/js/views/settings.js"></script>
+<script src="/ui/js/views/tokens.js"></script>
+<script src="/ui/js/views/coverage.js"></script>
+<script src="/ui/js/views/topology.js"></script>
+<script src="/ui/js/views/vulnerabilities.js"></script>
+<script src="/ui/js/app.js"></script>
+</body>
+</html>

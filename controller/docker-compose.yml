@@ -1,0 +1,77 @@
+# kite controller + TLS reverse proxy.
+#
+#   docker compose up -d
+#
+# That's the whole install. No file to copy first, no values to fill in:
+# everything kite needs is either defaulted or generated on first
+# start and persisted to the data volume.
+#
+# Needs Docker Compose v2.24 or newer, for `env_file: required: false`.
+# `docker compose version` will tell you; older versions abort when .env
+# is absent, which is exactly the manual step this removes.
+services:
+  controller:
+    build:
+      context: .
+      # The agents are built into the image from the repository around
+      # controller/ (see the Dockerfile), so the image can hand them out.
+      additional_contexts:
+        repo: ..
+    restart: unless-stopped
+    env_file:
+      # Optional. Create controller/.env (start from .env.example) only
+      # when you want to override a default — Proxmox credentials, a
+      # pinned enrollment secret, SMTP. Nothing here requires it.
+      - path: .env
+        required: false
+    environment:
+      # Pinned to the mounted volume below regardless of what's in
+      # .env — .env.example ships KITE_DB=kite.db (a bare
+      # relative path meant for the non-Docker install), which would
+      # otherwise land inside the container's ephemeral filesystem and
+      # lose all data on the next `docker compose up --build`.
+      KITE_DB: /app/data/kite.db
+      KITE_REPO_DIR: /app/data/repo
+      KITE_DIST_DIR: /app/data/dist
+      # Caddy reaches the controller from its own container, not from
+      # loopback: believe the client address it passes on (X-Forwarded-For)
+      # from the private container network, or every user shares one
+      # login rate-limit bucket. Safe because port 8000 is not published:
+      # only containers on this network can reach it.
+      KITE_TRUSTED_PROXIES: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fd00::/8"
+    volumes:
+      - controller_data:/app/data
+    # Not published to the host — caddy is the only public listener,
+    # same principle as the non-Docker install (uvicorn on 127.0.0.1
+    # only, see kite-controller.service).
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      # Waits for the controller's HEALTHCHECK (see Dockerfile) rather
+      # than just for its container to exist, so the first request after
+      # `docker compose up` doesn't hit a 502 while the app is still
+      # running migrations and bootstrapping.
+      controller:
+        condition: service_healthy
+    ports:
+      # 443 by default. Override without editing this file when something
+      # else already owns it, or when the daemon can't bind a privileged
+      # port at all (rootless Docker refuses anything under 1024):
+      #   KITE_HTTPS_PORT=8443 docker compose up -d
+      - "${KITE_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  # Holds the SQLite database, the generated secrets, and the dnf repo.
+  # Everything that must survive `docker compose down` lives here — back
+  # this up and you've backed up the whole controller.
+  controller_data:
+  caddy_data:
+  caddy_config:

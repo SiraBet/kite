@@ -1,0 +1,18 @@
+[Unit]
+Description=kite agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/kite-agent/agent.py
+Restart=always
+RestartSec=5
+User=root
+# Runs as root deliberately — dnf, versionlock, and reboot all require it.
+# This is a per-host, scoped credential (this host's agent_secret only),
+# not a shared central SSH key with root over the whole fleet. See
+# agent.py's module docstring for the full reasoning.
+
+[Install]
+WantedBy=multi-user.target

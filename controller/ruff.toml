@@ -1,0 +1,32 @@
+# Lint config for the controller. This exists partly because the code
+# already carried `# noqa: E712` / `# noqa: BLE001` / `# noqa: F401`
+# suppressions for a linter that was never actually configured or run —
+# those were decorative until now.
+#
+# Deliberately narrow: the point is to catch dead imports, unused names,
+# and real bug patterns, not to enforce a house style over a codebase
+# whose comment-heavy style is a deliberate choice.
+
+line-length = 120
+target-version = "py39"   # matches the RHEL 8/9 install target — see Dockerfile
+
+[lint]
+select = [
+    "F",     # pyflakes: undefined names, unused imports/variables
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "B",     # bugbear: mutable defaults, unused loop vars, except-in-finally
+    "BLE",   # blind `except Exception` — allowed, but only where annotated
+    "UP",    # pyupgrade, scoped to what py39 supports
+]
+ignore = [
+    "E501",  # line length is checked by line-length above; long comment prose is fine
+    "B008",  # `Depends(...)` in a default argument is exactly how FastAPI works
+    "UP006", # py39 can't use builtin generics in annotations evaluated at runtime
+    "UP035", # ditto: typing.List/Dict imports are required here, not legacy
+]
+
+[lint.per-file-ignores]
+# Tests mutate the session-scoped DB and re-import app modules; the
+# import-order rules that matter in app/ are noise here.
+"tests/*" = ["E402"]

@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+*.egg-info/
+
+# Runtime config/data - never commit real secrets or a live database
+controller/.env
+# Auto-generated secrets, persisted beside the DB so they survive a
+# restart (see controller/app/config.py's STATE_DIR).
+controller/secret_key
+controller/enroll_secret
+# The repo signing key and the daily database copies, same place
+controller/signing/
+controller/backups/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Test/build tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Generated dnf repo (built by controller-install.sh / packaging/build.sh)
+controller/repo/*.rpm
+controller/repo/repodata/
+
+# RPM build tree
+agent-linux/packaging/rpmbuild/
+agent-linux/packaging/out/
+agent-linux/packaging/*.rpm
+
+# OS/editor cruft
+.DS_Store
+*.swp
+
+# Built Windows agent, served from the controller's download endpoint.
+# Built from source by agent-windows/build.sh, the same way the dnf repo
+# above is built rather than committed.
+controller/dist/
+agent-windows/kite-agent.exe
+agent-windows/kite-agent
+
+# Release build output (build-release.sh)
+/release-dist/

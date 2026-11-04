@@ -1,0 +1,56 @@
+[Unit]
+Description=kite controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kite-controller
+# Bound to localhost only — Caddy (see Caddyfile) is the sole thing
+# listening on the network, terminating TLS in front of this.
+ExecStart=/opt/kite-controller/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+EnvironmentFile=/opt/kite-controller/.env
+Restart=always
+RestartSec=5
+User=kite
+Group=kite
+# The database, its pre-migration copies and the generated secrets hold
+# password hashes, the encrypted Proxmox token and agent credentials:
+# everything the service creates is readable by it alone.
+UMask=0077
+
+# Optional hardening: keep PROXMOX_TOKEN_SECRET, KITE_ENROLL_SECRET,
+# and KITE_SECRET_KEY out of the plaintext .env file (and out of
+# `ps`/environment dumps) using systemd's own credential mechanism
+# instead. The app checks for these automatically (see app/config.py's
+# _read_credential) and falls back to .env if they're not present, so
+# this is opt-in — put the lines below in a drop-in
+# (`systemctl edit kite-controller`, under [Service]; controller-install.sh
+# replaces this file on every run, a drop-in stays), create the files
+# (root-owned, 0600, containing just the secret value with no trailing
+# newline issues to worry about), and remove the corresponding line(s)
+# from .env once you've verified this works.
+#
+# Requires systemd >= 247 (Rocky/RHEL 9 has it; Rocky/RHEL 8's systemd 239
+# does not — LoadCredential= will fail unit startup there, not silently
+# no-op, so don't add it on an 8.x controller).
+#
+# LoadCredential=proxmox_token_secret:/etc/kite/credentials/proxmox_token_secret
+# LoadCredential=enroll_secret:/etc/kite/credentials/enroll_secret
+# LoadCredential=secret_key:/etc/kite/credentials/secret_key
+
+# Note: the bootstrap admin password, and any auto-generated (unpinned)
+# KITE_ENROLL_SECRET / KITE_SECRET_KEY, are printed once to this
+# unit's stdout/stderr — i.e. `journalctl -u kite-controller` — so
+# they're visible to anyone who can read the journal, which by default
+# on most distros means the `systemd-journal`/`adm` group, not just
+# root. Treat those printed values as already exposed the moment
+# they're logged: log in and rotate the admin password immediately,
+# pin KITE_ENROLL_SECRET/KITE_SECRET_KEY (.env or
+# LoadCredential= above) rather than leaving them to regenerate on
+# every restart, and keep journal read access limited to admins who
+# should have it (`journalctl`'s ACL follows normal group membership —
+# check who's in `systemd-journal`/`adm` on this host).
+
+[Install]
+WantedBy=multi-user.target

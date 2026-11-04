@@ -1,0 +1,10 @@
+-r requirements.txt
+pytest==8.3.4
+httpx==0.28.1
+ruff==0.14.5
+# Runs the console's JavaScript in a real V8 engine for
+# tests/test_frontend_render.py. A py2.py3-none wheel wrapping a bundled
+# V8 shared library, so it's Python-version-independent — but x86_64
+# Linux/macOS only. The tests skip themselves where it can't install,
+# rather than failing the suite.
+py-mini-racer==0.6.0

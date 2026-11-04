@@ -1,0 +1,68 @@
+name: release
+
+# Cut a release by pushing a version tag:  git tag v0.2.0 && git push origin v0.2.0
+# Produces a self-contained kite-controller-<ver>.tar.gz (controller +
+# prebuilt Windows agent + Linux RPM repo) plus the raw agent assets and
+# checksums, so a user's install needs no build step. The RPM repo is
+# signed by each controller with its own key on first start.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Rocky matches the agent's target and gives rpmbuild/rpm-sign/dnf the
+    # same environment the RPM will actually be installed on.
+    container: rockylinux:9
+    steps:
+      - name: Install build tooling
+        run: |
+          set -eux
+          dnf install -y 'dnf-command(config-manager)'
+          dnf config-manager --set-enabled crb
+          dnf install -y epel-release
+          dnf install -y rpm-build createrepo_c tar gzip git findutils which   # curl: the image's curl-minimal already provides it
+      - name: Install Go
+        env:
+          GO_VERSION: "1.23.4"
+        run: |
+          set -eux
+          curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
+          tar -C /usr/local -xzf /tmp/go.tgz
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@v4
+      - name: Build release
+        run: |
+          set -eux
+          VERSION="${GITHUB_REF_NAME#v}" ./build-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: release-dist/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub Release and upload assets
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: release-dist
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-dist/*.tar.gz
+            release-dist/*.exe
+            release-dist/*.rpm
+            release-dist/*.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true

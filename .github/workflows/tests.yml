@@ -1,0 +1,159 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: controller
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.14.5
+      - run: ruff check .
+
+  controller:
+    # pinned: setup-python has no 3.9 build for newer Ubuntu runners
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: controller
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the real deployment target (RHEL/Rocky 8 and 9, and the
+        # Docker image) and is what must keep passing. 3.12 runs too so
+        # the code doesn't quietly accumulate things a modern interpreter
+        # rejects — 3.9 is past upstream EOL, so this is the early
+        # warning for whenever the floor has to move.
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: controller/requirements-dev.txt
+      # rpm / createrepo-c / gnupg: app/repo_signing.py's end-to-end test builds and signs a real RPM
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq rpm createrepo-c gnupg >/dev/null
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -v
+
+  scripts:
+    # The example stage scripts and installers are things people paste into a
+    # root shell, so a syntax error in one is not a cosmetic problem. Parse
+    # every shipped script on every PR; PowerShell too, since none of it can
+    # be executed in CI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse shell scripts
+        run: |
+          set -euo pipefail
+          found=0
+          while IFS= read -r f; do
+            found=$((found + 1))
+            bash -n "$f" || { echo "::error file=$f::bash syntax error"; exit 1; }
+          done < <(find . -name '*.sh' -not -path './.git/*')
+          echo "parsed $found shell script(s)"
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = 0
+          $found = 0
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $found++
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$null, [ref]$errors)
+            if ($errors) {
+              $failed++
+              Write-Output "::error file=$($_.FullName)::$($errors[0].Message)"
+            }
+          }
+          Write-Output "parsed $found PowerShell script(s)"
+          if ($failed) { exit 1 }
+
+  agent-linux:
+    # pinned: setup-python has no 3.9 build for newer Ubuntu runners
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: agent-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+          cache-dependency-path: agent-linux/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -v
+
+  agent-windows:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: agent-windows/go.sum
+      - run: go vet ./...
+      # -race needs cgo and a C compiler, both present on this runner.
+      # The agent's status is written by the poll loop and read by the
+      # local UI server on another goroutine, so a data race here is a
+      # real one.
+      - run: go test -race -v ./...
+      # Cross-compiled here rather than on a Windows runner: neither
+      # binary uses cgo, so this produces the same files the controller
+      # hands out, and it proves the Windows-only code still builds --
+      # the two windows and the installer are compiled nowhere else.
+      - run: ./build.sh
+        env:
+          OUT: dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kite-agent-windows-amd64
+          path: agent-windows/dist/
+          # CI builds are only needed briefly; 90-day default filled Actions storage.
+          retention-days: 7
+
+  # The Docker install is the README's fastest path: its image must carry
+  # all three agents and serve them, or a fresh install can't enroll a
+  # single machine.
+  docker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose file is valid
+        working-directory: controller
+        run: docker compose config --quiet
+      - name: build the image, agents included
+        run: docker build --build-context repo=. -t kite-controller controller
+      - name: the image carries every agent
+        run: |
+          docker run --rm kite-controller sh -c '
+            ls -l /app/agents/dist/kite-agent.exe /app/agents/dist/kite-agent-setup.exe \
+                  /app/agents/dist/kite-agent.exe.version /app/agents/dist/kite-agent-linux.tar.gz \
+                  /app/agents/repo/repodata/repomd.xml /app/agents/repo/*.noarch.rpm'
+      - name: started, it serves them
+        run: |
+          docker run -d --name controller -p 8000:8000 kite-controller
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8000/health && break; sleep 2; done
+          docker logs controller 2>&1 | grep agent_seeded
+          docker logs controller 2>&1 | grep agent_repo_signed
+          for path in /download/agent-linux /download/agent/windows /repo/repodata/repomd.xml \
+                      /repo/repodata/repomd.xml.asc /repo/RPM-GPG-KEY-kite; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8000$path")
+            echo "$path $code"; test "$code" = 200
+          done
