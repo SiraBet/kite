@@ -167,10 +167,23 @@ def patch_host(host_id: int, payload: HostPatch, db: Session = Depends(get_db),
     if fields.get("proxmox_connection_id") is not None and not db.query(models.ProxmoxConnection).filter(
             models.ProxmoxConnection.id == fields["proxmox_connection_id"]).first():
         raise HTTPException(400, "No such Proxmox connection")
+    changes, changed = [], set()
     for field, value in fields.items():
+        before = getattr(host, field)
+        if (before or "") != (value or ""):
+            changed.add(field)
+            changes.append(f"{field}: {before if before not in (None, '') else 'unset'} → "
+                           f"{value if value not in (None, '') else 'unset'}")
         setattr(host, field, value)
     db.commit()
     db.refresh(host)
+    if changes:
+        # These fields decide which VM is snapshotted and restored for
+        # this host, whether it has a safety net at all, and which scripts
+        # and schedules reach it: who changed them belongs in the log.
+        audit.log(db, actor=user.username, role=user.role, action="host_edited",
+                  detail=f"{host.hostname} — {'; '.join(changes)}",
+                  tone="warning" if {"proxmox_vmid", "proxmox_connection_id", "rollback_backend"} & changed else "neutral")
     return _attach_safety_net(db, [host])[0]
 
 
