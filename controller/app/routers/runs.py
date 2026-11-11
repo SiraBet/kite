@@ -1,6 +1,6 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -240,11 +240,13 @@ def get_run(job_id: int, db: Session = Depends(get_db), user: models.User = Depe
 
 
 @router.get("", response_model=List[schemas.JobOut])
-def list_runs(host_id: int = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def list_runs(host_id: int = None, limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
+              db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Newest first. Every run carries each stage's output, so the list is paged rather than whole."""
     q = db.query(models.Job)
     if host_id:
         q = q.filter(models.Job.host_id == host_id)
-    return q.order_by(models.Job.id.desc()).all()
+    return q.order_by(models.Job.id.desc()).offset(offset).limit(limit).all()
 
 
 @router.post("/{job_id}/cancel", response_model=schemas.JobOut)

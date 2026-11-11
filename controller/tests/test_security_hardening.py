@@ -181,3 +181,70 @@ def test_an_agent_reports_its_hardware_id_once_none_is_on_record(client, db):
     db.expire_all()
     assert db.get(models.Host, body["host_id"]).smbios_uuid == "abcd-1234"
     assert _enroll(client, h, smbios_uuid="abcd-1234").status_code == 200   # now re-enrolls like a Linux host
+
+
+# ---------- smaller limits and guards ----------
+
+def test_an_agent_cannot_report_the_controllers_own_stage(client, db):
+    """Reporting 'snapshot' as done would skip the host's snapshot and go straight on to patching."""
+    from unittest.mock import patch
+    from conftest import make_host
+    from app import jobs_engine, models
+    host, secret = make_host(db)
+    job = models.Job(host_id=host.id, hostname=host.hostname, ticket_id="", operator="t", operator_role="admin",
+                     status="running")
+    db.add(job)
+    db.commit()
+    stages = [("snapshot", "controller"), ("patch", "agent")]
+    for i, (name, executor) in enumerate(stages):
+        db.add(models.JobStage(job_id=job.id, stage_index=i, name=name, executor=executor,
+                               status="running" if i == 0 else "pending"))
+    db.commit()
+
+    with patch.object(jobs_engine, "advance_job") as advanced:
+        resp = client.post(f"/agent/{host.id}/jobs/{job.id}/stages/snapshot/report",
+                           json={"status": "done", "output": "trust me"},
+                           headers={"Authorization": f"Bearer {secret}"})
+    assert resp.status_code == 409
+    advanced.assert_not_called()
+    db.expire_all()
+    snapshot = db.query(models.JobStage).filter_by(job_id=job.id, name="snapshot").one()
+    assert snapshot.status == "running" and snapshot.output != "trust me"
+    job.status = "cancelled"
+    db.commit()
+
+
+def test_listings_are_bounded(client, logged_in):
+    logged_in(role="viewer", username="limits-viewer")
+    assert client.get("/audit?limit=100000000").status_code == 422
+    assert client.get("/audit?limit=1000").status_code == 200
+    assert client.get("/runs?limit=100000000").status_code == 422
+    assert client.get("/runs?limit=5&offset=0").status_code == 200
+
+
+def test_only_admins_see_where_the_directory_and_mail_server_are(client, logged_in, db):
+    from app.settings_store import set_setting
+    set_setting(db, "ldap_bind_dn", "cn=svc-kite,ou=service,dc=example,dc=com")
+    set_setting(db, "notify_smtp_username", "alerts@example.com")
+    try:
+        logged_in(role="operator", username="settings-operator")
+        seen = {row["key"]: row["value"] for row in client.get("/settings").json()}
+        assert "ldap_bind_dn" not in seen and "notify_smtp_username" not in seen
+        assert "require_ticket" in seen                          # what the console needs is still there
+
+        logged_in(role="admin", username="settings-admin")
+        seen = {row["key"]: row["value"] for row in client.get("/settings").json()}
+        assert seen["ldap_bind_dn"].startswith("cn=svc-kite") and seen["notify_smtp_username"] == "alerts@example.com"
+    finally:
+        set_setting(db, "ldap_bind_dn", "")
+        set_setting(db, "notify_smtp_username", "")
+
+
+def test_an_unknown_setting_is_refused_rather_than_stored(client, logged_in, db):
+    from app import models
+    logged_in(role="admin", username="settings-typo-admin")
+    resp = client.put("/settings/requrie_ticket", json={"value": "true"})
+    assert resp.status_code == 404
+    assert db.query(models.Setting).filter(models.Setting.key == "requrie_ticket").first() is None
+    assert client.put("/settings/notify_smtp_from", json={"value": "x" * 2001}).status_code == 400
+    assert client.put("/settings/notify_smtp_from", json={"value": ""}).status_code == 200

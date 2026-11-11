@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Nothing here writes to the repository; pull requests from forks run this.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest

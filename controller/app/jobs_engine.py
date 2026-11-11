@@ -292,6 +292,11 @@ def report_agent_stage(db: Session, job: models.Job, stage_name: str, status: st
     current = stages[job.current_stage_index]
     if current.name != stage_name:
         raise ValueError(f"Agent reported stage '{stage_name}' but job is on '{current.name}'")
+    if current.executor != "agent":
+        # The snapshot and the soak are the controller's own: an agent
+        # that could report them done could skip its host's snapshot and
+        # walk straight into patching without the safety net.
+        raise ValueError(f"Stage '{stage_name}' is run by the controller, not reported by an agent")
 
     current.output = output
     current.finished_at = datetime.utcnow()

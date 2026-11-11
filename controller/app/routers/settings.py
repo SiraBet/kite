@@ -11,6 +11,16 @@ from ..settings_store import DEFAULTS, SECRET_KEYS, SECRET_NAMES, set_setting, s
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
+# Where the directory and the mail server are, and the accounts used to
+# reach them. Only the admin's Settings page needs these; every other
+# role gets the settings that shape what it sees (ticket requirement,
+# snapshot policy and so on) without them.
+ADMIN_ONLY_KEYS = {
+    "ldap_server_uri", "ldap_bind_dn", "ldap_user_base_dn", "ldap_user_filter", "ldap_ca_cert_file",
+    "notify_smtp_host", "notify_smtp_port", "notify_smtp_username", "notify_smtp_from", "notify_smtp_to",
+    "rollback_proxmox_host", "rollback_proxmox_node", "rollback_proxmox_token_id",
+}
+
 
 @router.get("", response_model=List[schemas.SettingOut])
 def list_settings(db: DbSession = Depends(get_db), user: models.User = Depends(get_current_user)):
@@ -26,6 +36,8 @@ def list_settings(db: DbSession = Depends(get_db), user: models.User = Depends(g
     # the key, for every secret this app knows about (not just Proxmox's).
     for name in SECRET_NAMES:
         out[f"{name}_set"] = "true" if secret_rows.get(f"{name}_enc") else "false"
+    if ROLE_RANK.get(user.role, -1) < ROLE_RANK["admin"]:
+        out = {k: v for k, v in out.items() if k not in ADMIN_ONLY_KEYS}
     return [schemas.SettingOut(key=k, value=v) for k, v in out.items()]
 
 
@@ -243,6 +255,13 @@ def update_setting(key: str, payload: schemas.SettingUpdate, db: DbSession = Dep
                     user: models.User = Depends(require_role("admin"))):
     if key in SECRET_KEYS or key in SECRET_NAMES:
         raise HTTPException(400, "Use PUT /settings/secret/{name} to set this value — it needs encrypting, not a plain write.")
+    if key not in DEFAULTS:
+        # Every setting the controller reads has a default, so a key
+        # without one is a typo: stored, it would do nothing, and the
+        # admin would believe they had changed something.
+        raise HTTPException(404, f"There is no setting called '{key}'")
+    if len(payload.value) > 2000:
+        raise HTTPException(400, "A setting's value can be at most 2000 characters")
     if key in ("snapshot_keep_count", "snapshot_keep_days") and not (payload.value.isdigit() and int(payload.value) <= 1000):
         raise HTTPException(400, f"{key} must be a whole number from 0 to 1000 (0 = no limit)")
     if key == "db_backup_keep" and not (payload.value.isdigit() and int(payload.value) <= 365):
