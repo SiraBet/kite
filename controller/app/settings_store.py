@@ -55,6 +55,9 @@ DEFAULTS = {
     "notify_smtp_from": "",
     "notify_smtp_to": "",
     "notify_smtp_use_tls": "",  # "" = default on, same blank-means-default convention as rollback_proxmox_verify_ssl
+    # "" = default on: the mail server's certificate must be valid for its
+    # host name. "false" is for a relay with a self-signed certificate.
+    "notify_smtp_verify_cert": "",
 
     # --- Agent self-update ---
     # '' = disabled, the default -- nothing changes for anyone who

@@ -249,8 +249,8 @@ def update_setting(key: str, payload: schemas.SettingUpdate, db: DbSession = Dep
         raise HTTPException(400, "db_backup_keep must be a whole number from 0 to 365 (0 = no backups)")
     if key == "audit_keep_days" and not (payload.value.isdigit() and int(payload.value) <= 3650):
         raise HTTPException(400, "audit_keep_days must be a whole number of days from 0 to 3650 (0 = keep all)")
-    if key in ("require_ticket", "patch_skip_uninstallable", "snapshot_cleanup", "vuln_feed_enabled") \
-            and payload.value not in ("true", "false"):
+    if key in ("require_ticket", "patch_skip_uninstallable", "snapshot_cleanup", "vuln_feed_enabled",
+               "notify_smtp_verify_cert") and payload.value not in ("true", "false"):
         raise HTTPException(400, f"{key} must be 'true' or 'false'")
     if key == "ldap_default_role" and payload.value not in ROLE_RANK:
         raise HTTPException(400, f"ldap_default_role must be one of {list(ROLE_RANK)}")

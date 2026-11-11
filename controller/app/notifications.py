@@ -26,6 +26,7 @@ scope justifies right now.
 import ipaddress
 import smtplib
 import socket
+import ssl
 from email.mime.text import MIMEText
 from urllib.parse import urlparse
 
@@ -134,6 +135,7 @@ def _send_email(db, action, detail):
     password = get_secret(db, "notify_smtp_password")
     from_addr = get_setting(db, "notify_smtp_from") or username or "kite@localhost"
     use_tls = get_setting(db, "notify_smtp_use_tls") != "false"
+    verify_cert = get_setting(db, "notify_smtp_verify_cert") != "false"
     recipients = [r.strip() for r in to.split(",") if r.strip()]
 
     msg = MIMEText(detail)
@@ -144,7 +146,14 @@ def _send_email(db, action, detail):
     try:
         with smtplib.SMTP(host, port, timeout=WEBHOOK_TIMEOUT) as server:
             if use_tls:
-                server.starttls()
+                # smtplib's own default context checks neither the
+                # certificate nor the host name, which would hand the
+                # login below to anyone able to answer for this server.
+                context = ssl.create_default_context()
+                if not verify_cert:
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+                server.starttls(context=context)
             if username and password:
                 server.login(username, password)
             server.sendmail(from_addr, recipients, msg.as_string())
