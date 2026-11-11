@@ -225,3 +225,102 @@ def test_schedule_severity_filter_is_validated_like_a_runs(client, logged_in):
     assert client.patch(f"/schedules/{created['id']}", json={"severity_filter": "hihg"}).status_code == 400
     patched = client.patch(f"/schedules/{created['id']}", json={"severity_filter": "critical"})
     assert patched.json()["severity_filter"] == "critical"
+
+
+# ---------- rolling out one machine at a time ----------
+# Firing on every machine in scope at once means one bad update, or one
+# bad reboot, lands on all of them before anyone can see the first fail.
+
+def _staged(db, team, n=3):
+    _seed_checklist(db)
+    set_setting(db, "require_ticket", "false")
+    hosts = []
+    for i in range(n):
+        host, _ = make_host(db)
+        host.team, host.hostname = team, f"{team}-{i}"
+        host.rollback_backend = "none"   # no hypervisor in the tests: the snapshot stage passes straight through
+        hosts.append(host)
+    sched = models.Schedule(name=f"Staged {team}", team=team, day_of_week=0, hour=3, created_by="tester",
+                            rollout=models.BATCH_ONE_AT_A_TIME)
+    db.add(sched)
+    db.commit()
+    db.refresh(sched)
+    return sched, hosts
+
+
+def _active(db, hosts):
+    return [j.hostname for j in db.query(models.Job)
+            .filter(models.Job.host_id.in_([h.id for h in hosts]), models.Job.status.in_(["queued", "running"])).all()]
+
+
+def _end(db, hostname, status):
+    """The machine's run ends the way the engine ends one: status set, then the batch is told."""
+    from app import jobs_engine
+    job = db.query(models.Job).filter(models.Job.hostname == hostname,
+                                      models.Job.status.in_(["queued", "running"])).one()
+    job.status = status
+    db.commit()
+    jobs_engine.job_finished(db, job)
+
+
+def test_a_staged_schedule_starts_one_machine_and_then_the_next(db):
+    sched, hosts = _staged(db, "stg-a")
+    scheduler._fire_schedule(db, sched)
+
+    assert _active(db, hosts) == ["stg-a-0"]
+    job = db.query(models.Job).filter(models.Job.hostname == "stg-a-0").one()
+    assert job.operator == "system" and job.batch_id is not None
+    confirmed = db.query(models.ChecklistConfirmation).filter(models.ChecklistConfirmation.job_id == job.id).all()
+    assert [c.confirmed_by for c in confirmed] == ["system (scheduled)"]
+
+    _end(db, "stg-a-0", "done")
+    assert _active(db, hosts) == ["stg-a-1"]
+    _end(db, "stg-a-1", "done")
+    _end(db, "stg-a-2", "done")
+    assert db.get(models.Batch, job.batch_id).status == "done"
+
+
+def test_a_staged_schedule_pauses_on_a_failure_and_says_so(db):
+    from unittest.mock import patch
+    sched, hosts = _staged(db, "stg-b")
+    scheduler._fire_schedule(db, sched)
+    batch_id = db.query(models.Job).filter(models.Job.hostname == "stg-b-0").one().batch_id
+
+    with patch("app.notifications._send_slack") as notified:
+        _end(db, "stg-b-0", "failed")
+
+    assert _active(db, hosts) == []                       # nothing else was touched
+    assert db.get(models.Batch, batch_id).status == "paused"
+    assert any(call.args[1] == "batch_paused" for call in notified.call_args_list)   # nobody is watching at 3am
+
+
+def test_the_next_firing_retires_what_is_left_of_the_last_one(db):
+    sched, hosts = _staged(db, "stg-c")
+    scheduler._fire_schedule(db, sched)
+    first = db.query(models.Job).filter(models.Job.hostname == "stg-c-0").one().batch_id
+    _end(db, "stg-c-0", "failed")                         # paused, and nobody answers all week
+
+    scheduler._fire_schedule(db, sched)
+    db.expire_all()
+    assert db.get(models.Batch, first).status == "stopped"
+    assert _active(db, hosts) == ["stg-c-0"]              # the new rollout starts from the top, alone
+
+
+def test_schedules_made_before_rollouts_still_fire_everywhere_at_once(db):
+    sched, hosts = _staged(db, "stg-d")
+    sched.rollout = None
+    db.commit()
+    scheduler._fire_schedule(db, sched)
+    assert sorted(_active(db, hosts)) == ["stg-d-0", "stg-d-1", "stg-d-2"]
+    assert all(j.batch_id is None for j in db.query(models.Job).filter(models.Job.hostname.like("stg-d-%")).all())
+
+
+def test_schedule_rollout_is_validated_and_returned(client, logged_in):
+    logged_in(role="admin", username="sch-admin-rollout")
+    base = {"name": "Rolling", "day_of_week": 1, "hour": 3}
+    assert client.post("/schedules", json={**base, "rollout": "sideways"}).status_code == 400
+    created = client.post("/schedules", json={**base, "rollout": "one_at_a_time"}).json()
+    assert created["rollout"] == "one_at_a_time"
+    assert client.post("/schedules", json=base).json()["rollout"] == "parallel"
+    assert client.patch(f"/schedules/{created['id']}", json={"rollout": "nope"}).status_code == 400
+    assert client.patch(f"/schedules/{created['id']}", json={"rollout": "parallel"}).json()["rollout"] == "parallel"

@@ -34,7 +34,11 @@ def create_schedule(payload: schemas.ScheduleCreate, db: Session = Depends(get_d
     if scope not in models.RUN_SCOPES:
         raise HTTPException(400, f"scope must be one of {models.RUN_SCOPES}")
 
+    if payload.rollout not in models.BATCH_ROLLOUTS:
+        raise HTTPException(400, f"rollout must be one of {models.BATCH_ROLLOUTS}")
+
     s = models.Schedule(
+        rollout=payload.rollout,
         name=payload.name.strip(), team=payload.team or "", day_of_week=payload.day_of_week,
         hour=payload.hour, ticket_id=payload.ticket_id or None, created_by=user.username,
         scope=scope,
@@ -51,7 +55,8 @@ def create_schedule(payload: schemas.ScheduleCreate, db: Session = Depends(get_d
     db.commit()
     db.refresh(s)
     audit.log(db, actor=user.username, role=user.role, action="schedule_created",
-              detail=f"{s.name} — {models.DAY_NAMES[s.day_of_week]} {s.hour:02d}:00 UTC, team={s.team or 'all'}")
+              detail=f"{s.name} — {models.DAY_NAMES[s.day_of_week]} {s.hour:02d}:00 UTC, team={s.team or 'all'}, "
+                     f"{'one machine at a time' if s.rollout == models.BATCH_ONE_AT_A_TIME else 'every machine at once'}")
     return s
 
 
@@ -67,6 +72,8 @@ def update_schedule(schedule_id: int, payload: schemas.ScheduleUpdate, db: Sessi
         raise HTTPException(400, f"scope must be one of {models.RUN_SCOPES}")
     if fields.get("severity_filter") is not None:
         fields["severity_filter"] = normalise_severity_filter(fields["severity_filter"])
+    if fields.get("rollout") is not None and fields["rollout"] not in models.BATCH_ROLLOUTS:
+        raise HTTPException(400, f"rollout must be one of {models.BATCH_ROLLOUTS}")
     # `containers` is a list on the wire and a newline-separated column
     # in the table; without translating it here a plain setattr would
     # attach a stray attribute and silently drop the change.

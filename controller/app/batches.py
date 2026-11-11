@@ -11,6 +11,11 @@ this decides when each one starts:
 
 A machine that can't start when its turn comes (it has another run going,
 or no containers to update) is skipped and noted, and the batch moves on.
+
+A schedule set to roll out one at a time is a batch too (app/scheduler.py
+starts it, as "system"). Its settings carry the schedule's run details
+under "scheduled", and its machines' runs are started the way a schedule
+starts them: no person's checklist, no maintenance-window check.
 """
 import json
 from datetime import datetime
@@ -55,6 +60,13 @@ def _start_host(db: Session, b: models.Batch, host_id: int) -> bool:
     if not host:
         _skip(db, b, host_id, "no longer in the fleet")
         return False
+    scheduled = _json(b.settings, {}).get("scheduled")
+    if scheduled:
+        from . import scheduler   # local: scheduler imports this module
+        why = scheduler.start_host_run(db, host, scheduled, batch_id=b.id)
+        if why:
+            _skip(db, b, host_id, why)
+        return not why
     try:
         start_job(db, b.operator, b.operator_role, host, _settings(b), (), batch_id=b.id)
         return True
@@ -85,7 +97,26 @@ def _finish(db: Session, b: models.Batch, status: str = "done"):
               tone="success" if ok == len(host_ids(b)) else "warning")
 
 
-def start(db: Session, user: models.User, ids: list, rollout: str, settings: dict) -> models.Batch:
+def stop_superseded(db: Session, schedule_id: int):
+    """
+    A schedule is about to start its next rollout: whatever is left of its
+    previous one (still going, or paused on a failure nobody answered)
+    starts nothing more. Two rollouts of one schedule would otherwise work
+    through the same machines side by side.
+    """
+    for b in db.query(models.Batch).filter(models.Batch.status.in_(["running", "paused"])).all():
+        if (_json(b.settings, {}).get("scheduled") or {}).get("schedule_id") != schedule_id:
+            continue
+        b.status, b.paused_reason = "stopped", ""
+        jobs = db.query(models.Job).filter(models.Job.batch_id == b.id).all()
+        if all(j.status in _ENDED for j in jobs):
+            b.finished_at = datetime.utcnow()
+        db.commit()
+        audit.log(db, actor="system", role="controller", action="batch_stopped",
+                  detail=f"batch {b.id} — its schedule came round again before it finished", tone="warning")
+
+
+def start(db: Session, user, ids: list, rollout: str, settings: dict) -> models.Batch:
     b = models.Batch(rollout=rollout, status="running", host_ids=json.dumps(ids),
                      settings=json.dumps(settings), operator=user.username, operator_role=user.role)
     db.add(b)
