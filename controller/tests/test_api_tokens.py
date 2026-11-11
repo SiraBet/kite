@@ -161,3 +161,23 @@ def test_token_lifecycle_is_audited(client, logged_in, db):
     client.delete(f"/tokens/{created['id']}")
     actions = [a.action for a in db.query(models.AuditLog).filter(models.AuditLog.detail.contains("audit-me")).all()]
     assert "api_token_created" in actions and "api_token_revoked" in actions
+
+
+def test_changing_your_password_revokes_your_api_tokens(client, logged_in, db):
+    """A token is a credential for up to a year. Changing a password that may have leaked
+    must stop everything issued under the account, as an admin's reset already does."""
+    from conftest import make_user
+    logged_in(role="operator", username="tok-pw-change")
+    other, _ = make_user(db, "tok-pw-bystander", "operator")
+    mine = _create(client, name="mine")["token"]
+    db.add(models.ApiToken(name="theirs", token_hash=hash_secret("kite_someone-elses"), prefix="kite_some",
+                           user_id=other.id, scope="read", expires_at=datetime.utcnow() + timedelta(days=1)))
+    db.commit()
+    assert _bearer(mine).get("/hosts").status_code == 200
+
+    resp = client.post("/auth/change-password",
+                       json={"current_password": "test-password-123", "new_password": "a-new-long-password"})
+    assert resp.status_code == 200 and resp.json()["api_tokens_revoked"] == 1
+
+    assert _bearer(mine).get("/hosts").status_code == 401
+    assert db.query(models.ApiToken).filter(models.ApiToken.user_id == other.id).count() == 1
