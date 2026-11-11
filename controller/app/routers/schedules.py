@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, audit
 from ..db import get_db
 from ..auth import get_current_user, require_role
+from .runs import normalise_severity_filter
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
@@ -41,7 +42,10 @@ def create_schedule(payload: schemas.ScheduleCreate, db: Session = Depends(get_d
         # are in scope that week, and a container id is per-host while a
         # compose service name is the thing they have in common.
         container_selection="\n".join(payload.containers or []),
-        severity_filter=(payload.severity_filter or "").strip().lower().replace("all", ""),
+        # Checked as a single run's is: a typo here would otherwise match
+        # nothing, and the schedule would "succeed" every week having
+        # installed no updates at all.
+        severity_filter=normalise_severity_filter(payload.severity_filter),
     )
     db.add(s)
     db.commit()
@@ -61,6 +65,8 @@ def update_schedule(schedule_id: int, payload: schemas.ScheduleUpdate, db: Sessi
     _validate_time(fields.get("day_of_week"), fields.get("hour"))
     if fields.get("scope") is not None and fields["scope"] not in models.RUN_SCOPES:
         raise HTTPException(400, f"scope must be one of {models.RUN_SCOPES}")
+    if fields.get("severity_filter") is not None:
+        fields["severity_filter"] = normalise_severity_filter(fields["severity_filter"])
     # `containers` is a list on the wire and a newline-separated column
     # in the table; without translating it here a plain setattr would
     # attach a stray attribute and silently drop the change.

@@ -13,7 +13,7 @@ from ..settings_store import get_setting
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 
-def _normalise_severity_filter(raw) -> str:
+def normalise_severity_filter(raw) -> str:
     """
     '' for everything, 'security' for advisories only, otherwise a
     lower-cased severity list.
@@ -137,7 +137,7 @@ def check_run_request(db: Session, user: models.User, payload) -> dict:
         # with a change, in one run, under one audit entry. Keep them
         # separate so what happened stays legible.
         raise HTTPException(400, "A container rollback must run on its own (scope 'containers')")
-    severity_filter = _normalise_severity_filter(payload.severity_filter)
+    severity_filter = normalise_severity_filter(payload.severity_filter)
     if scope == models.SCOPE_CONTAINERS and severity_filter:
         raise HTTPException(400, "severity_filter applies to OS packages; this run patches none")
     return {"ticket_id": payload.ticket_id or "", "window_override_reason": payload.window_override_reason,
