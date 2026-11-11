@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas, audit
 from ..db import get_db
-from ..auth import require_role, ROLE_RANK
+from ..auth import find_user, require_role, ROLE_RANK
 from ..security import cli_safe_token, hash_password
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -23,19 +23,25 @@ def create_user(payload: schemas.UserCreate, db: Session = Depends(get_db),
         raise HTTPException(400, f"role must be one of {list(ROLE_RANK)}")
     if len(payload.password) < 12:
         raise HTTPException(400, "Password must be at least 12 characters")
-    if db.query(models.User).filter(models.User.username == payload.username).first():
-        raise HTTPException(409, f"Username '{payload.username}' already exists")
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(400, "Username can't be blank")
+    # Also refused when it differs from an existing name only by case:
+    # sign-in treats those as the same account (auth.find_user).
+    taken = find_user(db, username)
+    if taken:
+        raise HTTPException(409, f"Username '{taken.username}' already exists")
 
     new_user = models.User(
-        username=payload.username, password_hash=hash_password(payload.password),
-        role=payload.role, display_name=payload.display_name or payload.username,
+        username=username, password_hash=hash_password(payload.password),
+        role=payload.role, display_name=payload.display_name or username,
         must_change_password=payload.must_change_password,
     )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
     audit.log(db, actor=user.username, role=user.role, action="user_created",
-              detail=f"{payload.username} ({payload.role})"
+              detail=f"{username} ({payload.role})"
                      + (", must choose their own password at first sign-in" if payload.must_change_password else ""))
     return new_user
 
