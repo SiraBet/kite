@@ -710,6 +710,8 @@ class ScheduleCreate(BaseModel):
     scope: str = "os"
     containers: List[str] = []
     severity_filter: str = ""
+    # 'parallel' (every machine at once) or 'one_at_a_time' -- see models.Schedule.rollout
+    rollout: str = "parallel"
 
 
 class ScheduleUpdate(BaseModel):
@@ -722,6 +724,7 @@ class ScheduleUpdate(BaseModel):
     scope: Optional[str] = None
     containers: Optional[List[str]] = None
     severity_filter: Optional[str] = None
+    rollout: Optional[str] = None
 
 
 class ScheduleOut(BaseModel):
@@ -734,6 +737,7 @@ class ScheduleOut(BaseModel):
     hour: int
     enabled: bool
     ticket_id: Optional[str] = None
+    rollout: Optional[str] = "parallel"
     created_by: str
     last_fired_at: Optional[datetime] = None
 

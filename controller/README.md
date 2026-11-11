@@ -826,7 +826,16 @@ Four independent gaps closed in this phase:
   schedule needs a `ticket_id` pointing at a ticket that's still
   `Approved` at fire time (checked fresh every time, not just when the
   schedule was created) — an un-approved or missing ticket makes that
-  cycle skip and log a warning rather than patch anyway.
+  cycle skip and log a warning rather than patch anyway. A schedule
+  reaches its machines either all at once or **one at a time**
+  (`rollout`: `parallel` | `one_at_a_time`; the console offers one at a
+  time first). One at a time runs as a batch, in hostname order: the
+  next machine starts only when the one before it finished cleanly, and
+  a failed or stopped run pauses the rest and sends a notification
+  (`batch_paused`) so someone can continue or stop it from the batch
+  page. If the schedule comes round again before that happens, what is
+  left of the earlier rollout is stopped and a new one starts. Schedules
+  created before this option keep firing on every machine at once.
 - **Password reset** — Settings → Users → "Reset password" (admin-only).
   Replaces "delete and recreate the account": keeps the user's id, role,
   and audit history intact, sets a **temporary** password (one the admin
