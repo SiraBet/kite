@@ -100,17 +100,41 @@ def notify_if_relevant(db, action: str, detail: str, tone: str):
     _send_email(db, action, detail)
 
 
+def _where(url: str) -> str:
+    """
+    A webhook's host, for log lines. Never the URL: for Slack and most
+    receivers the path is the credential, and these lines go to the
+    journal (and on from there), which is not where a secret kept
+    encrypted in the database should end up.
+    """
+    return urlparse(url).hostname or "an unreadable address"
+
+
+def _post_webhook(url: str, body: dict, what: str):
+    """
+    Not following redirects: _webhook_url_is_blocked vetted the address
+    in the setting, and a receiver answering "302, try
+    http://169.254.169.254/..." would send the request on to exactly the
+    place that check exists to keep it away from.
+    """
+    try:
+        resp = requests.post(url, json=body, timeout=WEBHOOK_TIMEOUT, allow_redirects=False)
+        if resp.is_redirect:
+            logger.warning("%s notification not delivered: %s answered with a redirect, which isn't followed",
+                           what, _where(url))
+    except requests.RequestException as e:
+        # The exception's text carries the full URL too.
+        logger.warning("%s notification to %s failed: %s", what, _where(url), type(e).__name__)
+
+
 def _send_generic_webhook(db, action, detail, tone):
     url = get_secret(db, "notify_generic_webhook")
     if not url:
         return
     if _webhook_url_is_blocked(url):
-        logger.warning("generic webhook notification skipped: %s resolves to a blocked address", url)
+        logger.warning("generic webhook notification skipped: %s resolves to a blocked address", _where(url))
         return
-    try:
-        requests.post(url, json={"action": action, "detail": detail, "tone": tone}, timeout=WEBHOOK_TIMEOUT)
-    except requests.RequestException as e:
-        logger.warning("generic webhook notification failed: %s", e)
+    _post_webhook(url, {"action": action, "detail": detail, "tone": tone}, "generic webhook")
 
 
 def _send_slack(db, action, detail, tone):
@@ -118,13 +142,10 @@ def _send_slack(db, action, detail, tone):
     if not url:
         return
     if _webhook_url_is_blocked(url):
-        logger.warning("Slack notification skipped: %s resolves to a blocked address", url)
+        logger.warning("Slack notification skipped: %s resolves to a blocked address", _where(url))
         return
     emoji = _TONE_EMOJI.get(tone, "ℹ️")
-    try:
-        requests.post(url, json={"text": f"{emoji} *kite* — {action}: {detail}"}, timeout=WEBHOOK_TIMEOUT)
-    except requests.RequestException as e:
-        logger.warning("Slack notification failed: %s", e)
+    _post_webhook(url, {"text": f"{emoji} *kite* — {action}: {detail}"}, "Slack")
 
 
 def _send_email(db, action, detail):
