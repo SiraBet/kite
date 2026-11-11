@@ -129,6 +129,72 @@ def test_authenticate_uses_anonymous_search_bind_when_no_bind_dn(db):
     assert captured["bind_user"] is None  # anonymous search bind, no service account configured
 
 
+# ---------- the connection to the directory ----------
+# Every password typed at sign-in crosses it, and whoever can answer in the
+# directory's place decides who gets in.
+
+def _transport_used(db, **settings):
+    """The (server, auto_bind) authenticate() opens its connections with."""
+    _configure(db, **settings)
+    seen = {}
+
+    def factory(server, user=None, password=None, auto_bind=None, receive_timeout=None):
+        seen.setdefault("server", server)
+        seen.setdefault("auto_bind", auto_bind)
+        conn = MagicMock()
+        conn.entries = [_FakeEntry("uid=alice,ou=people,dc=example,dc=com")]
+        return conn
+
+    try:
+        with patch("app.ldap_auth.ldap3.Connection", side_effect=factory):
+            assert ldap_auth.authenticate(db, "alice", "pw") is True
+    finally:
+        for key in ("ldap_verify_cert", "ldap_starttls", "ldap_ca_cert_file"):
+            set_setting(db, key, "")
+    return seen["server"], seen["auto_bind"]
+
+
+def test_ldaps_checks_the_directorys_certificate(db):
+    import ssl
+    server, auto_bind = _transport_used(db, ldap_server_uri="ldaps://dc.example.com")
+    assert server.ssl is True
+    assert server.tls.validate == ssl.CERT_REQUIRED
+    assert auto_bind is True
+
+
+def test_plain_ldap_is_upgraded_with_starttls_before_any_bind(db):
+    import ssl
+    server, auto_bind = _transport_used(db, ldap_server_uri="ldap://dc.example.com")
+    assert server.ssl is False
+    assert auto_bind == ldap3.AUTO_BIND_TLS_BEFORE_BIND     # the password never goes out in clear text
+    assert server.tls.validate == ssl.CERT_REQUIRED
+
+
+def test_certificate_check_and_starttls_can_each_be_turned_off(db):
+    import ssl
+    server, _ = _transport_used(db, ldap_server_uri="ldaps://dc.example.com", ldap_verify_cert="false")
+    assert server.tls.validate == ssl.CERT_NONE
+    _, auto_bind = _transport_used(db, ldap_server_uri="ldap://dc.example.com", ldap_starttls="false")
+    assert auto_bind is True
+
+
+def test_a_missing_ca_file_fails_the_login_rather_than_skipping_the_check(db):
+    _configure(db, ldap_server_uri="ldaps://dc.example.com", ldap_ca_cert_file="/nonexistent/ca.pem")
+    try:
+        with patch("app.ldap_auth.ldap3.Connection") as conn:
+            assert ldap_auth.authenticate(db, "alice", "pw") is False
+        conn.assert_not_called()
+    finally:
+        set_setting(db, "ldap_ca_cert_file", "")
+
+
+def test_ldap_transport_settings_only_take_true_or_false(client, logged_in):
+    logged_in(role="admin", username="ldap-tls-admin")
+    for key in ("ldap_verify_cert", "ldap_starttls"):
+        assert client.put(f"/settings/{key}", json={"value": "off"}).status_code == 400
+        assert client.put(f"/settings/{key}", json={"value": "true"}).status_code == 200
+
+
 # ---------- login() integration: local precedence + JIT provisioning ----------
 
 def test_login_local_user_never_touches_ldap(db, client):
