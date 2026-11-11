@@ -1427,7 +1427,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Visit `http://<control-vm>:8000/` for the console itself, or
-`http://<control-vm>:8000/docs` for interactive API docs (Swagger UI).
+`http://<control-vm>:8000/docs` for interactive API docs (Swagger UI),
+once enabled with `KITE_API_DOCS=true`. They are off by default: `/docs`,
+`/redoc` and `/openapi.json` answer without sign-in.
 The frontend is served by the controller directly (same origin, no CORS
 config needed for normal use) from `frontend/kite.html`.
 
@@ -1577,10 +1579,12 @@ reports back via `POST /agent/{host_id}/jobs/{job_id}/stages/{name}/report`.
 
 ## Metrics & monitoring
 
-`GET /metrics` — Prometheus exposition format, no auth (same as every
-Prometheus exporter; restrict at the network/firewall level if you don't
-want it public, not something the app itself gates). Only aggregate
-counts, never hostnames or anything host-identifying:
+`GET /metrics` — Prometheus exposition format, open by default (same as
+every Prometheus exporter; restrict at the network/firewall level
+first). Where that isn't enough, set `KITE_METRICS_TOKEN` and the
+endpoint requires `Authorization: Bearer <token>`; in Prometheus that is
+`authorization: {credentials: <token>}` on the scrape job. Only
+aggregate counts, never hostnames or anything host-identifying:
 
 - `kite_hosts_connectivity{tier="healthy|stale|offline"}` — same
   three-tier logic as the Fleet dashboard (see "Fleet connectivity"
