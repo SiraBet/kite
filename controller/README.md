@@ -854,7 +854,13 @@ independent, optional channels, any or all of them at once:
   bespoke code; point the generic webhook at a Teams "when a webhook
   request is received" flow instead, which works today.
 - **Email** — plain SMTP (stdlib `smtplib`, no new dependency), with
-  optional STARTTLS and login.
+  optional STARTTLS and login. With STARTTLS the mail server's
+  certificate is checked against the system's CAs and the configured
+  host name, so the login is only ever sent to that server. A relay with
+  a self-signed certificate needs that check turned off:
+  `PUT /settings/notify_smtp_verify_cert` with `{"value": "false"}`
+  (admin). The connection is still encrypted, but no longer
+  authenticated.
 
 All three send on the same events: a stage failing, a stage stuck past
 its threshold (see "Metrics & monitoring"), a host going offline, or a

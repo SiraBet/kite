@@ -1,3 +1,4 @@
+import ssl
 from unittest.mock import patch
 
 import pytest
@@ -14,7 +15,8 @@ def _clean_notify_settings(db):
     prior test configured would otherwise still be 'on' here too."""
     for name in ("notify_generic_webhook", "notify_slack_webhook", "notify_smtp_password"):
         set_secret(db, name, "")
-    for key in ("notify_smtp_host", "notify_smtp_to", "notify_smtp_username", "notify_smtp_use_tls", "notify_on_success"):
+    for key in ("notify_smtp_host", "notify_smtp_to", "notify_smtp_username", "notify_smtp_use_tls", "notify_smtp_verify_cert",
+                "notify_on_success"):
         set_setting(db, key, "")
     yield
 
@@ -95,6 +97,10 @@ def test_notify_email_sends_via_smtp(db):
         notifications.notify_if_relevant(db, "stage_stuck", "job 2 stuck on reboot", "warning")
 
     mock_server.starttls.assert_called_once()
+    # The login must only go to a server that proved who it is.
+    context = mock_server.starttls.call_args.kwargs["context"]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
     mock_server.login.assert_called_once_with("kite", "smtp-pass")
     assert mock_server.sendmail.call_count == 1
     args = mock_server.sendmail.call_args[0]
@@ -111,6 +117,27 @@ def test_notify_email_skips_tls_when_disabled(db):
         notifications.notify_if_relevant(db, "stage_failed", "job 3 failed", "danger")
 
     mock_server.starttls.assert_not_called()
+
+
+def test_notify_email_certificate_check_can_be_turned_off(db):
+    """For a relay with a self-signed certificate: still encrypted, by explicit choice unverified."""
+    set_setting(db, "notify_smtp_host", "smtp.example.invalid")
+    set_setting(db, "notify_smtp_to", "ops@example.invalid")
+    set_setting(db, "notify_smtp_verify_cert", "false")
+
+    with patch("app.notifications.smtplib.SMTP") as mock_smtp_cls:
+        mock_server = mock_smtp_cls.return_value.__enter__.return_value
+        notifications.notify_if_relevant(db, "stage_failed", "job 5 failed", "danger")
+
+    context = mock_server.starttls.call_args.kwargs["context"]
+    assert context.verify_mode == ssl.CERT_NONE
+    assert context.check_hostname is False
+
+
+def test_smtp_certificate_setting_only_takes_true_or_false(client, logged_in):
+    logged_in(role="admin", username="smtp-cert-admin")
+    assert client.put("/settings/notify_smtp_verify_cert", json={"value": "no"}).status_code == 400
+    assert client.put("/settings/notify_smtp_verify_cert", json={"value": "false"}).status_code == 200
 
 
 def test_notify_email_failure_is_swallowed(db):
