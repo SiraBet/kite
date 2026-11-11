@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="kite-controller", version="1.0.0", lifespan=lifespan,
+    title="kite-controller", version="1.1.0", lifespan=lifespan,
     # Unauthenticated by nature, so only served when asked for (KITE_API_DOCS).
     docs_url="/docs" if settings.api_docs else None,
     redoc_url="/redoc" if settings.api_docs else None,

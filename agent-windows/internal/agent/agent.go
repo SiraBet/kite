@@ -11,7 +11,7 @@ import (
 
 // AgentVersion is reported on every poll and compared by the controller
 // against its configured target. Bump it on release.
-const AgentVersion = "1.0.0"
+const AgentVersion = "1.1.0"
 
 // Status is what the local UI shows: plain data, no lock, so it can be
 // copied and serialised freely. StatusHolder below owns the mutex --

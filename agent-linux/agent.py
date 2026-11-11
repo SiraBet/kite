@@ -47,7 +47,7 @@ import requests
 # should self-update. Sent on every poll; never trusted by
 # the controller for anything security-sensitive, purely informational
 # plus this one opt-in comparison.
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 
 CONFIG_PATH = os.environ.get("KITE_AGENT_CONFIG", "/etc/kite/agent.conf")
 STATE_PATH = os.environ.get("KITE_AGENT_STATE", "/var/lib/kite/pending_reboot.json")
