@@ -221,6 +221,16 @@ class Settings:
     # that isn't coming back at all than a slow-but-fine reboot.
     stuck_reboot_minutes: int = int(os.environ.get("STUCK_REBOOT_MINUTES", "15"))
 
+    # The interactive API docs (/docs, /redoc) and the schema behind them
+    # (/openapi.json) answer anyone who can reach the controller, before
+    # any sign-in, and list every route it has. Off unless asked for.
+    api_docs: bool = os.environ.get("KITE_API_DOCS", "false").lower() == "true"
+
+    # When set, /metrics needs "Authorization: Bearer <this>" (Prometheus:
+    # `authorization.credentials`). Unset, it stays open, as a scrape
+    # endpoint conventionally is -- see main.py's metrics().
+    metrics_token: str = _read_credential("metrics_token") or os.environ.get("KITE_METRICS_TOKEN", "")
+
     log_format: str = os.environ.get("KITE_LOG_FORMAT", "text")  # "text" or "json"
     log_level: str = os.environ.get("KITE_LOG_LEVEL", "INFO")
 
