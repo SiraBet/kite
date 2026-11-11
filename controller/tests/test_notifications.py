@@ -140,6 +140,28 @@ def test_smtp_certificate_setting_only_takes_true_or_false(client, logged_in):
     assert client.put("/settings/notify_smtp_verify_cert", json={"value": "false"}).status_code == 200
 
 
+def test_a_bad_smtp_port_costs_the_email_not_the_operation(db):
+    """The port was parsed outside the try: a non-numeric value raised out of audit.log itself."""
+    set_setting(db, "notify_smtp_host", "smtp.example.invalid")
+    set_setting(db, "notify_smtp_to", "ops@example.invalid")
+    set_setting(db, "notify_smtp_port", "five-eight-seven")
+    try:
+        with patch("app.notifications.smtplib.SMTP") as mock_smtp_cls:
+            audit.log(db, actor="system", role="controller", action="stage_failed", detail="job 6 failed",
+                      tone="danger")                             # must not raise
+        mock_smtp_cls.assert_not_called()
+    finally:
+        set_setting(db, "notify_smtp_port", "")
+
+
+def test_smtp_port_setting_must_be_a_port(client, logged_in):
+    logged_in(role="admin", username="smtp-port-admin")
+    for bad in ("five-eight-seven", "0", "70000"):
+        assert client.put("/settings/notify_smtp_port", json={"value": bad}).status_code == 400, bad
+    assert client.put("/settings/notify_smtp_port", json={"value": "2525"}).status_code == 200
+    assert client.put("/settings/notify_smtp_port", json={"value": ""}).status_code == 200   # blank = the default
+
+
 def test_notify_email_failure_is_swallowed(db):
     set_setting(db, "notify_smtp_host", "smtp.example.invalid")
     set_setting(db, "notify_smtp_to", "ops@example.invalid")

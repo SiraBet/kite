@@ -245,6 +245,8 @@ def update_setting(key: str, payload: schemas.SettingUpdate, db: DbSession = Dep
         raise HTTPException(400, "Use PUT /settings/secret/{name} to set this value — it needs encrypting, not a plain write.")
     if key in ("snapshot_keep_count", "snapshot_keep_days") and not (payload.value.isdigit() and int(payload.value) <= 1000):
         raise HTTPException(400, f"{key} must be a whole number from 0 to 1000 (0 = no limit)")
+    if key == "notify_smtp_port" and payload.value and not (payload.value.isdigit() and 0 < int(payload.value) < 65536):
+        raise HTTPException(400, "notify_smtp_port must be a port number from 1 to 65535 (blank = 587)")
     if key == "db_backup_keep" and not (payload.value.isdigit() and int(payload.value) <= 365):
         raise HTTPException(400, "db_backup_keep must be a whole number from 0 to 365 (0 = no backups)")
     if key == "audit_keep_days" and not (payload.value.isdigit() and int(payload.value) <= 3650):
