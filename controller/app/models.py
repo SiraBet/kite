@@ -415,6 +415,11 @@ class Schedule(Base):
     scope = Column(String, default=SCOPE_OS)
     container_selection = Column(Text, default="")
     severity_filter = Column(String, default="")
+    # How a firing reaches the machines in scope (BATCH_ROLLOUTS): all at
+    # once, or one at a time as a batch that pauses on a failure. NULL on
+    # schedules made before this existed, which fire all at once as they
+    # always have.
+    rollout = Column(String, nullable=True, default=BATCH_PARALLEL)
     created_by = Column(String, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     last_fired_at = Column(DateTime, nullable=True)
