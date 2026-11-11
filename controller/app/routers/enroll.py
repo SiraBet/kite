@@ -113,10 +113,23 @@ def _upsert_host(db: Session, hostname: str, team: str, role: str,
     generated per-host secret — this is the thing that replaces whatever
     bootstrap credential got you in the door, same as Wazuh's agent-auth
     handshake.
+
+    `proxmox_vmid` is the VM id the enrolling agent claims as its own. It
+    decides which VM the controller snapshots, prunes snapshots on and
+    offers to restore for this host, so a wrong value points all of that
+    at somebody else's machine. It is therefore only taken on trust from
+    a one-time token, which an admin issued for this hostname, and only
+    to fill in a link that isn't there yet: an existing link is never
+    replaced from here (PATCH /hosts/{id} is how an admin moves one). The
+    shared secret is in every install command, so a VM id sent with it is
+    dropped; those hosts are linked by SMBIOS UUID or by an admin.
     """
     host = db.query(models.Host).filter(models.Host.hostname == hostname).first()
     secret = generate_secret()
     now = datetime.utcnow()
+    claimed_vmid = proxmox_vmid
+    if shared_secret:
+        proxmox_vmid = None
     if host:
         _enforce_host_identity(db, host, smbios_uuid or "", shared_secret=shared_secret)
         host.agent_secret_hash = hash_secret(secret)
@@ -125,7 +138,7 @@ def _upsert_host(db: Session, hostname: str, team: str, role: str,
         host.smbios_uuid = smbios_uuid or host.smbios_uuid
         if poll_interval_seconds:
             host.poll_interval_seconds = poll_interval_seconds
-        host.proxmox_vmid = proxmox_vmid or host.proxmox_vmid
+        host.proxmox_vmid = host.proxmox_vmid or proxmox_vmid
         host.enrolled_at = now
         host.last_seen = now
         host.status = "healthy"
@@ -151,6 +164,12 @@ def _upsert_host(db: Session, hostname: str, team: str, role: str,
         db.add(host)
     db.commit()
     db.refresh(host)
+    if claimed_vmid and host.proxmox_vmid != claimed_vmid:
+        audit.log(db, actor="system", role="controller", action="enroll_vmid_ignored",
+                  detail=f"{host.hostname} — the agent reported VM {claimed_vmid}, which was not applied: "
+                         + ("a VM id isn't accepted with the shared secret" if shared_secret
+                            else f"this machine is already linked to VM {host.proxmox_vmid}"),
+                  tone="warning")
     _try_auto_resolve_vmid(db, host)
     return host, secret
 

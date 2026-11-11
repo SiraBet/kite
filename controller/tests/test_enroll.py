@@ -86,3 +86,71 @@ def test_enrollment_counts_as_contact(client, db):
     host = db.query(models.Host).filter(models.Host.hostname == "just-enrolled").one()
     assert host.last_seen is not None
     assert monitoring.connectivity_tier(host) == "healthy"
+
+
+# ---------- Which VM a host is linked to ----------
+# The VM id decides which VM the controller snapshots and offers to
+# restore for a host, so an enrolling agent only gets to name one when an
+# admin issued its token, and never gets to change one that's already set.
+
+def _token_for(client, logged_in, hostname):
+    logged_in(role="admin", username=f"vmid-admin-{uuid.uuid4().hex[:8]}")
+    return client.post("/enroll/tokens", json={"hostname": hostname, "team": "", "role": ""}).json()["token"]
+
+
+def _host(db, hostname):
+    db.expire_all()
+    return db.query(models.Host).filter(models.Host.hostname == hostname).one()
+
+
+def _audited(db, action, hostname):
+    return [r for r in db.query(models.AuditLog).filter(models.AuditLog.action == action).all()
+            if hostname in (r.detail or "")]
+
+
+def test_token_enroll_takes_the_agents_vmid(client, logged_in, db):
+    hostname = f"vmid-token-{uuid.uuid4().hex[:8]}"
+    token = _token_for(client, logged_in, hostname)
+    resp = client.post("/agent/enroll", json={"token": token, **_enroll_payload(hostname), "proxmox_vmid": 4101})
+    assert resp.status_code == 200, resp.text
+    assert _host(db, hostname).proxmox_vmid == 4101
+    assert not _audited(db, "enroll_vmid_ignored", hostname)
+
+
+def test_self_enroll_ignores_the_agents_vmid(client, db):
+    """Anyone holding the shared secret could otherwise link a host to any VM."""
+    hostname = f"vmid-self-{uuid.uuid4().hex[:8]}"
+    resp = client.post("/agent/self-enroll", json={
+        "secret": "test-enroll-secret", "hostname": hostname, **_enroll_payload(hostname), "proxmox_vmid": 4102,
+    })
+    assert resp.status_code == 200, resp.text
+    assert _host(db, hostname).proxmox_vmid is None
+    assert len(_audited(db, "enroll_vmid_ignored", hostname)) == 1
+
+
+def test_self_re_enroll_cannot_repoint_a_linked_host(client, db):
+    """A host that re-enrols itself must not be able to move its link to another VM."""
+    hostname = f"vmid-repoint-{uuid.uuid4().hex[:8]}"
+    payload = {"secret": "test-enroll-secret", "hostname": hostname, **_enroll_payload(hostname),
+               "smbios_uuid": str(uuid.uuid4())}
+    assert client.post("/agent/self-enroll", json=payload).status_code == 200
+    host = _host(db, hostname)
+    host.proxmox_vmid = 4103   # as an admin, or the SMBIOS match, would have set it
+    db.commit()
+
+    resp = client.post("/agent/self-enroll", json={**payload, "proxmox_vmid": 4999})
+    assert resp.status_code == 200, resp.text
+    assert _host(db, hostname).proxmox_vmid == 4103
+
+
+def test_token_re_enroll_keeps_an_existing_link(client, logged_in, db):
+    hostname = f"vmid-keep-{uuid.uuid4().hex[:8]}"
+    first = _token_for(client, logged_in, hostname)
+    assert client.post("/agent/enroll", json={"token": first, **_enroll_payload(hostname),
+                                              "proxmox_vmid": 4104}).status_code == 200
+
+    second = _token_for(client, logged_in, hostname)
+    resp = client.post("/agent/enroll", json={"token": second, **_enroll_payload(hostname), "proxmox_vmid": 4998})
+    assert resp.status_code == 200, resp.text
+    assert _host(db, hostname).proxmox_vmid == 4104
+    assert len(_audited(db, "enroll_vmid_ignored", hostname)) == 1
