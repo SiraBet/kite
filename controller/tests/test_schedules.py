@@ -209,6 +209,24 @@ def test_run_scheduler_pass_ignores_disabled_schedules(db):
     assert db.query(models.Job).filter(models.Job.host_id == host.id).first() is None
 
 
+def test_schedule_severity_filter_is_validated_like_a_runs(client, logged_in):
+    """An unknown severity matches no update: the schedule fired every week, patched nothing
+    and reported success."""
+    logged_in(role="admin", username="sch-admin-severity")
+    base = {"name": "Security weekly", "day_of_week": 1, "hour": 3}
+    typo = client.post("/schedules", json={**base, "severity_filter": "critcal"})
+    assert typo.status_code == 400 and "Unknown severity" in typo.json()["detail"]
+
+    created = client.post("/schedules", json={**base, "severity_filter": " Critical, Important "}).json()
+    assert created["severity_filter"] == "critical,important"
+    assert client.post("/schedules", json={**base, "severity_filter": "all"}).json()["severity_filter"] == ""
+    assert client.post("/schedules", json={**base, "severity_filter": "security"}).json()["severity_filter"] == "security"
+
+    assert client.patch(f"/schedules/{created['id']}", json={"severity_filter": "hihg"}).status_code == 400
+    patched = client.patch(f"/schedules/{created['id']}", json={"severity_filter": "critical"})
+    assert patched.json()["severity_filter"] == "critical"
+
+
 # ---------- rolling out one machine at a time ----------
 # Firing on every machine in scope at once means one bad update, or one
 # bad reboot, lands on all of them before anyone can see the first fail.
