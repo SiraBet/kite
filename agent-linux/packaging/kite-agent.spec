@@ -1,5 +1,5 @@
 Name:           kite-agent
-Version:        1.0.0
+Version:        1.1.0
 Release:        1%{?dist}
 Summary:        kite fleet patch-management agent
 License:        Apache-2.0
@@ -149,5 +149,10 @@ if [ "$1" -eq 0 ] ; then
 fi
 
 %changelog
+* Thu Nov 12 2026 kite <kite@localhost> - 1.1.0-1
+- A self-update from the controller's bundle must come with a checksum.
+- License and URL corrected (Apache-2.0).
+- See CHANGELOG.md in the repository for the full release notes.
+
 * Tue Nov 03 2026 kite <kite@localhost> - 1.0.0-1
 - First release.

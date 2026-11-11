@@ -46,7 +46,7 @@ Spin up Rocky 9, then download the latest release tarball, verify it, and
 run the installer:
 
 ```bash
-ver=1.0.0   # the release you're installing
+ver=1.1.0   # the release you're installing
 curl -fsSLO https://github.com/SiraBet/kite/releases/download/v${ver}/kite-controller-${ver}.tar.gz
 curl -fsSLO https://github.com/SiraBet/kite/releases/download/v${ver}/kite-controller-${ver}.tar.gz.sha256
 sha256sum -c kite-controller-${ver}.tar.gz.sha256   # must print: OK

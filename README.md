@@ -83,7 +83,7 @@ To upgrade, run `git pull && docker compose up -d --build`.
 - [Controller](controller/README.md): configuration, rollback backends, Proxmox, the API
 - [Linux agent](agent-linux/README.md) · [Windows agent](agent-windows/README.md)
 - [Per-OS script templates](controller/examples/os-scripts/) · [AI skill](ai/skills/kite-stage-script/)
-- [Roadmap](controller/ROADMAP.md)
+- [Roadmap](controller/ROADMAP.md) · [Changelog](CHANGELOG.md)
 
 ## Contributing
 
