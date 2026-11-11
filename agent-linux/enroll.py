@@ -173,7 +173,9 @@ def main():
     parser.add_argument("--role", default="", help="only used with --secret")
     parser.add_argument("--os-version", default=None, help="override auto-detected OS version string")
     parser.add_argument("--os-family", default=None, help="override auto-detected OS family key, e.g. 'rocky8'")
-    parser.add_argument("--vmid", type=int, default=None, help="Proxmox VM ID for this host (for the snapshot stage)")
+    parser.add_argument("--vmid", type=int, default=None, help="Proxmox VM ID for this host (for the snapshot stage). Only taken with --token, and only "
+                              "when the host has no VM linked yet; otherwise the controller matches the VM "
+                              "by SMBIOS UUID, or an admin sets it in the console.")
     parser.add_argument("--poll-interval", type=int, default=900,
                          help="Baseline check-in interval in seconds when idle (default 900 = 15 min). "
                               "The local trigger file gives instant response for on-demand work regardless "

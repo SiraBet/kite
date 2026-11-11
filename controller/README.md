@@ -679,6 +679,14 @@ snapshots) cross-references it against every VM on the configured node
 to find the matching numeric VM ID, and sets `proxmox_vmid`
 automatically. No manual step, no copying VM IDs out of the Proxmox UI.
 
+An agent can also name its VM ID itself (`enroll.py --vmid`). Because
+that link decides which VM gets snapshotted and restored, the controller
+only takes it from a one-time token enrollment, and only for a host that
+has no VM linked yet. It is ignored with the shared enrollment secret,
+and it never replaces an existing link: change one with
+`PATCH /hosts/{id}`. Either case is recorded in the activity log as
+`enroll_vmid_ignored`.
+
 If it doesn't resolve at enrollment time (Proxmox creds weren't
 configured yet, or a transient API issue), retry it later — either the
 "resolve VMID" button next to that host in the Fleet tab, or
