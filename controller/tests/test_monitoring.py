@@ -131,3 +131,21 @@ def test_metrics_endpoint_is_reachable_without_auth(client):
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "kite_hosts_connectivity" in resp.text
+
+
+# ---------- what answers without sign-in ----------
+
+def test_api_docs_are_not_served_unless_asked_for(client):
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_metrics_can_require_a_bearer_token(client):
+    from unittest.mock import patch
+    from app.main import settings
+    assert client.get("/metrics").status_code == 200            # open by default, as a scrape endpoint is
+    with patch.object(settings, "metrics_token", "scrape-secret"):
+        assert client.get("/metrics").status_code == 401
+        assert client.get("/metrics", headers={"Authorization": "Bearer wrong"}).status_code == 401
+        ok = client.get("/metrics", headers={"Authorization": "Bearer scrape-secret"})
+        assert ok.status_code == 200 and "kite_" in ok.text
