@@ -1679,6 +1679,14 @@ def test_ubuntu_update_refuses_a_bundle_that_fails_its_checksum(monkeypatch, tmp
     assert calls == []
 
 
+def test_ubuntu_update_refuses_a_bundle_that_comes_without_a_checksum(monkeypatch, tmp_path):
+    """A missing header used to skip the check altogether and install whatever arrived."""
+    a, calls = _apt_agent(monkeypatch, tmp_path, _bundle("0.1.12"), sha="")
+    a.self_update("0.1.12")
+    assert (tmp_path / "agent.py").read_text() == 'AGENT_VERSION = "0.1.11"\n' and calls == []
+    assert not (tmp_path / "agent.py.prev").exists()
+
+
 # ---------- installed software ----------
 
 _RPM_OUT = ("openssl-libs\t1\t3.0.7\t27.el9\tx86_64\topenssl-3.0.7-27.el9.src.rpm\tRocky Enterprise Software Foundation\n"
