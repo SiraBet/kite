@@ -181,3 +181,32 @@ def test_an_agent_reports_its_hardware_id_once_none_is_on_record(client, db):
     db.expire_all()
     assert db.get(models.Host, body["host_id"]).smbios_uuid == "abcd-1234"
     assert _enroll(client, h, smbios_uuid="abcd-1234").status_code == 200   # now re-enrolls like a Linux host
+
+
+# ---------- writes must come from the console's own origin ----------
+# SameSite=Lax treats every port and sibling service on the controller's
+# host name as the same site, so the cookie alone doesn't keep them out.
+
+def test_a_write_from_another_origin_is_refused(client, logged_in, db):
+    from app import models
+    logged_in(role="admin", username="origin-admin")
+    before = db.query(models.ChecklistItem).count()
+    for origin in ("https://evil.example", "http://testserver:8081", "null"):
+        resp = client.post("/checklist-items", json={"text": "planted"}, headers={"Origin": origin})
+        assert resp.status_code == 403, origin
+    assert db.query(models.ChecklistItem).count() == before
+
+
+def test_writes_from_the_console_and_from_non_browsers_still_work(client, logged_in):
+    logged_in(role="admin", username="origin-admin-2")
+    same = client.post("/checklist-items", json={"text": "from the console"}, headers={"Origin": "http://testserver"})
+    assert same.status_code == 200, same.text
+    no_origin = client.post("/checklist-items", json={"text": "from a script"})      # agents, curl, the MCP server
+    assert no_origin.status_code == 200, no_origin.text
+    for created in (same, no_origin):
+        client.delete(f"/checklist-items/{created.json()['id']}")
+
+
+def test_reads_are_not_affected_by_origin(client, logged_in):
+    logged_in(role="viewer", username="origin-viewer")
+    assert client.get("/hosts", headers={"Origin": "https://evil.example"}).status_code == 200
