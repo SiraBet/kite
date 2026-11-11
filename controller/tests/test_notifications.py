@@ -164,6 +164,40 @@ def test_audit_log_does_not_notify_for_irrelevant_action(db):
     mock_post.assert_not_called()
 
 
+def test_webhooks_do_not_follow_redirects(db):
+    """The address check vets the configured URL; a redirect would send the request
+    wherever the receiver said instead, including the addresses that check refuses."""
+    set_secret(db, "notify_generic_webhook", "https://example.invalid/hook")
+    set_secret(db, "notify_slack_webhook", "https://hooks.slack.example/services/T0/B0/secret")
+    with patch("app.notifications._webhook_url_is_blocked", return_value=False), \
+         patch("app.notifications.requests.post") as mock_post:
+        notifications.notify_if_relevant(db, "stage_failed", "job 7 failed", "danger")
+    assert mock_post.call_count == 2
+    assert all(call.kwargs["allow_redirects"] is False for call in mock_post.call_args_list)
+
+
+def test_a_webhook_url_never_reaches_the_log(db, caplog):
+    """For Slack and most receivers the URL's path is the credential."""
+    import logging
+    import requests
+    secret_url = "https://hooks.slack.example/services/T0/B0/very-secret-path"
+    set_secret(db, "notify_slack_webhook", secret_url)
+    set_secret(db, "notify_generic_webhook", secret_url)
+    failure = requests.ConnectionError(f"HTTPSConnectionPool: Max retries exceeded with url: {secret_url}")
+    kite_log = logging.getLogger(notifications.logger.name)
+    kite_log.addHandler(caplog.handler)
+    try:
+        with patch("app.notifications._webhook_url_is_blocked", return_value=False), \
+             patch("app.notifications.requests.post", side_effect=failure):
+            notifications.notify_if_relevant(db, "stage_failed", "job 8 failed", "danger")
+        with patch("app.notifications._webhook_url_is_blocked", return_value=True):
+            notifications.notify_if_relevant(db, "stage_failed", "job 9 failed", "danger")
+    finally:
+        kite_log.removeHandler(caplog.handler)
+    assert "hooks.slack.example" in caplog.text                # says where, so it can be acted on
+    assert "very-secret-path" not in caplog.text
+
+
 # ---------- _webhook_url_is_blocked (SSRF guard) ----------
 
 @pytest.mark.parametrize("url", [
