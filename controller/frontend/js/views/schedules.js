@@ -34,7 +34,7 @@ function renderSchedules(){
         return `
         <div class="panel-row" style="grid-template-columns:1.4fr 0.95fr 1.1fr 0.6fr 0.95fr 0.95fr 92px 34px">
           <div><div class="mono" style="font-weight:500;font-size:12px">${esc(s.name)}</div>
-            <div class="host-sub">${esc(s.team||'all teams')} &middot; ${s.severity_filter?esc(s.severity_filter)+' only':'all updates'}${s.ticket_id?` &middot; ${esc(s.ticket_id)}`:''}</div></div>
+            <div class="host-sub">${esc(s.team||'all teams')} &middot; ${s.severity_filter?esc(s.severity_filter)+' only':'all updates'} &middot; ${s.rollout==='one_at_a_time'?'one machine at a time':'every machine at once'}${s.ticket_id?` &middot; ${esc(s.ticket_id)}`:''}</div></div>
           <div>${scheduleScopeBadge(s.scope)}</div>
           <div class="mono secondary" style="font-size:11.5px">Weekly · ${DAY_NAMES[s.day_of_week]} ${String(s.hour).padStart(2,'0')}:00</div>
           <div class="mono" style="font-size:11.5px">${hosts}</div>
@@ -74,6 +74,10 @@ function renderSchedules(){
             <option value="security">Security only</option>
             <option value="critical,important">Critical + Important</option>
             <option value="critical">Critical only</option>
+          </select>
+          <select id="new-sched-rollout" class="grow" title="How a firing reaches the machines in scope. One at a time starts the next machine only when the one before it finished cleanly, and pauses on a failure.">
+            <option value="one_at_a_time">One machine at a time</option>
+            <option value="parallel">Every machine at once</option>
           </select>
           <select id="new-sched-ticket" class="grow">
             <option value="">${requireTicket() ? 'Select an approved ticket…' : 'No ticket (optional)'}</option>
@@ -141,6 +145,7 @@ async function createScheduleHandler(){
   const scope = document.getElementById('new-sched-scope').value;
   const severity_filter = scope === 'containers' ? '' : document.getElementById('new-sched-severity').value;
   const ticket_id = document.getElementById('new-sched-ticket').value.trim() || null;
+  const rollout = document.getElementById('new-sched-rollout').value;
   const errEl = document.getElementById('schedule-form-error');
   errEl.innerHTML = '';
   if(!name){ errEl.innerHTML = errorBanner('Name is required.'); return; }
@@ -149,7 +154,7 @@ async function createScheduleHandler(){
     // against whatever hosts are in its team, and each host runs
     // different things. Every updatable container on each host is
     // resolved at fire time.
-    await api.createSchedule({ name, team, day_of_week, hour, ticket_id, scope, severity_filter });
+    await api.createSchedule({ name, team, day_of_week, hour, ticket_id, scope, severity_filter, rollout });
     await loadSchedules();
     toast(`${name} scheduled.`, 'success');
   }catch(e){ errEl.innerHTML = errorBanner(e.message); }

@@ -16,10 +16,11 @@ untouched and exactly as tested.
 """
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 
 from sqlalchemy.exc import IntegrityError
 
-from . import models, audit, jobs_engine, rollback
+from . import models, audit, batches, jobs_engine, rollback
 from .config import settings
 from .logging_config import logger
 from .settings_store import get_setting
@@ -48,7 +49,7 @@ def _ticket_ok(db, schedule: models.Schedule):
     return True, None
 
 
-def _container_selection_for(db, host, scope, schedule):
+def _container_selection_for(db, host, scope, selection):
     """
     Newline-separated container names this scheduled run may update, or
     None when the host has nothing it can update and the run would be
@@ -65,12 +66,83 @@ def _container_selection_for(db, host, scope, schedule):
         c.name for c in db.query(models.Container).filter(models.Container.host_id == host.id).all()
         if c.updatable
     )
-    chosen = [n.strip() for n in (schedule.container_selection or "").splitlines() if n.strip()]
+    chosen = [n.strip() for n in (selection or "").splitlines() if n.strip()]
     if chosen:
         updatable = [n for n in updatable if n in chosen]
     if not updatable:
         return None if scope == models.SCOPE_CONTAINERS else ""
     return "\n".join(updatable)
+
+
+NO_CONTAINERS = "it has no compose-managed containers to update"
+ALREADY_RUNNING = "it already has a run in progress"
+
+
+def _run_spec(db, schedule: models.Schedule) -> dict:
+    """
+    What every run this firing starts has in common. A plain dict, because
+    a staged rollout keeps it on its batch and starts the later machines'
+    runs from it long after this pass has returned.
+    """
+    return {
+        "name": schedule.name, "ticket_id": schedule.ticket_id or "",
+        "scope": schedule.scope or models.SCOPE_OS,
+        "container_selection": schedule.container_selection or "",
+        "severity_filter": schedule.severity_filter or "",
+        "checklist": [item.text for item in db.query(models.ChecklistItem).order_by(models.ChecklistItem.id).all()],
+    }
+
+
+def start_host_run(db, host: models.Host, spec: dict, batch_id: int = None):
+    """Start one machine's scheduled run. Returns None, or why it didn't start."""
+    already_active = (
+        db.query(models.Job)
+        .filter(models.Job.host_id == host.id, models.Job.status.in_(["queued", "running"]))
+        .first()
+    )
+    if already_active:
+        return ALREADY_RUNNING  # same guard routers/runs.py's create_run uses -- don't stack a second run on a locked host
+
+    backend_name = rollback.resolve_backend_name(db, host)
+    scope = spec["scope"]
+    selection = _container_selection_for(db, host, scope, spec["container_selection"])
+    if selection is None:
+        # This schedule updates containers, and this host has none it can
+        # update: a run would have nothing to do.
+        return NO_CONTAINERS
+    job = models.Job(
+        host_id=host.id, hostname=host.hostname, ticket_id=spec["ticket_id"],
+        operator="system", operator_role="admin", rollback_backend=backend_name,
+        scope=scope, container_selection=selection,
+        severity_filter=spec["severity_filter"], batch_id=batch_id,
+    )
+    db.add(job)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()   # a run was started on it just now: same as already_active above
+        return ALREADY_RUNNING
+    db.refresh(job)
+
+    for i, (name, executor) in enumerate(models.stages_for(scope)):
+        if name == "snapshot":
+            executor = rollback.stage_executor_for(backend_name)
+        db.add(models.JobStage(job_id=job.id, stage_index=i, name=name, executor=executor))
+    for i, text in enumerate(spec["checklist"]):
+        # Visibly not a human confirmation -- confirmed_by says so
+        # explicitly rather than attributing it to whichever admin
+        # happened to create the schedule.
+        db.add(models.ChecklistConfirmation(
+            job_id=job.id, item_index=i, item_text=text, confirmed_by="system (scheduled)",
+        ))
+    db.commit()
+    db.refresh(job)
+
+    host.status = "locked"
+    db.commit()
+
+    jobs_engine.advance_job(db, job)
+    return None
 
 
 def _fire_schedule(db, schedule: models.Schedule):
@@ -83,62 +155,41 @@ def _fire_schedule(db, schedule: models.Schedule):
         db.commit()
         return
 
-    checklist_items = db.query(models.ChecklistItem).order_by(models.ChecklistItem.id).all()
-    fired_for = []
-    for host in _hosts_in_scope(db, schedule):
-        already_active = (
-            db.query(models.Job)
-            .filter(models.Job.host_id == host.id, models.Job.status.in_(["queued", "running"]))
-            .first()
-        )
-        if already_active:
-            continue  # same guard routers/runs.py's create_run uses -- don't stack a second run on a locked host
+    spec = _run_spec(db, schedule)
+    # By name, so a staged rollout goes through the fleet in an order
+    # someone can predict and read back from the batch page.
+    hosts = sorted(_hosts_in_scope(db, schedule), key=lambda h: h.hostname)
 
-        backend_name = rollback.resolve_backend_name(db, host)
-        scope = schedule.scope or models.SCOPE_OS
-        selection = _container_selection_for(db, host, scope, schedule)
-        if selection is None:
-            # This schedule updates containers, and this host has none it
-            # can update. Skip the host rather than starting a run that
-            # would have nothing to do -- and say so, since a silently
-            # absent run is indistinguishable from a broken schedule.
+    if (schedule.rollout or models.BATCH_PARALLEL) == models.BATCH_ONE_AT_A_TIME and len(hosts) > 1:
+        # One machine at a time, as a batch: the next starts only when the
+        # one before it finished cleanly, and a failure pauses the rest
+        # for someone to look at (app/batches.py) instead of repeating
+        # itself on every machine in scope.
+        batches.stop_superseded(db, schedule.id)
+        batch = batches.start(
+            db, SimpleNamespace(username="system", role="admin"), [h.id for h in hosts],
+            models.BATCH_ONE_AT_A_TIME,
+            {"ticket_id": spec["ticket_id"], "scope": spec["scope"], "severity_filter": spec["severity_filter"],
+             "scheduled": dict(spec, schedule_id=schedule.id)},
+        )
+        schedule.last_fired_at = datetime.utcnow()
+        db.commit()
+        audit.log(db, actor="system", role="controller", action="schedule_fired",
+                  detail=f"{schedule.name} — batch {batch.id}: {len(hosts)} machines, one at a time", tone="success")
+        logger.info("schedule_fired name=%s batch=%d hosts=%d", schedule.name, batch.id, len(hosts))
+        return
+
+    fired_for = []
+    for host in hosts:
+        why = start_host_run(db, host, spec)
+        if why == NO_CONTAINERS:
+            # Say so: a silently absent run is indistinguishable from a
+            # broken schedule.
             audit.log(db, actor="system", role="controller", action="schedule_skipped",
                       detail=f"{schedule.name} — {host.hostname} has no compose-managed containers",
                       tone="warning")
-            continue
-        job = models.Job(
-            host_id=host.id, hostname=host.hostname, ticket_id=schedule.ticket_id or "",
-            operator="system", operator_role="admin", rollback_backend=backend_name,
-            scope=scope, container_selection=selection,
-            severity_filter=schedule.severity_filter or "",
-        )
-        db.add(job)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()   # a run was started on it just now: same as already_active above
-            continue
-        db.refresh(job)
-
-        for i, (name, executor) in enumerate(models.stages_for(scope)):
-            if name == "snapshot":
-                executor = rollback.stage_executor_for(backend_name)
-            db.add(models.JobStage(job_id=job.id, stage_index=i, name=name, executor=executor))
-        for i, item in enumerate(checklist_items):
-            # Visibly not a human confirmation -- confirmed_by says so
-            # explicitly rather than attributing it to whichever admin
-            # happened to create the schedule.
-            db.add(models.ChecklistConfirmation(
-                job_id=job.id, item_index=i, item_text=item.text, confirmed_by="system (scheduled)",
-            ))
-        db.commit()
-        db.refresh(job)
-
-        host.status = "locked"
-        db.commit()
-
-        jobs_engine.advance_job(db, job)
-        fired_for.append(host.hostname)
+        if not why:
+            fired_for.append(host.hostname)
 
     schedule.last_fired_at = datetime.utcnow()
     db.commit()

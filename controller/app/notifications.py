@@ -82,8 +82,10 @@ def _webhook_url_is_blocked(url: str) -> bool:
 # fleet scale for most people, even though the roadmap explicitly asked
 # for job completion as an available trigger -- it's available, just
 # not the default.
+# batch_paused: a rollout stopped on a failure and is waiting for a person,
+# who for a scheduled one isn't watching.
 ALWAYS_NOTIFY_ACTIONS = {"stage_failed", "host_offline", "stage_stuck", "schedule_skipped",
-                          "critical_update_found", "port_opened"}
+                          "critical_update_found", "port_opened", "batch_paused"}
 OPT_IN_SUCCESS_ACTIONS = {"run_completed"}
 
 _TONE_EMOJI = {"danger": "🔴", "warning": "🟡", "success": "✅"}
