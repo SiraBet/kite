@@ -313,3 +313,71 @@ def test_a_cancelled_run_never_moves_on(db):
     db.commit()
     jobs_engine.advance_job(db, job)
     assert job.status == "cancelled" and _stage(job, "excludes").status == "pending"
+
+
+# ---------- runs nobody collected ----------
+# A step handed to an agent waits to be polled for. With the machine off,
+# the run used to wait for good and start whenever the agent came back.
+
+def _waiting_run(db, hours_ago, last_seen_hours_ago=None, poll_interval=900):
+    from app.settings_store import set_setting
+    set_setting(db, "run_start_timeout_hours", "4")
+    host, _ = make_host(db)
+    host.status, host.poll_interval_seconds, host.rollback_backend = "locked", poll_interval, "none"
+    now = datetime.utcnow()
+    host.last_seen = None if last_seen_hours_ago is None else now - timedelta(hours=last_seen_hours_ago)
+    job = _make_job(db, host)
+    jobs_engine.advance_job(db, job)
+    stage = _stage(job, "preflight")
+    assert stage.status == "running"
+    stage.started_at = now - timedelta(hours=hours_ago)
+    db.commit()
+    return host, job, stage
+
+
+def test_a_run_its_machine_never_collected_is_cancelled(db):
+    host, job, stage = _waiting_run(db, hours_ago=5, last_seen_hours_ago=9)
+    assert jobs_engine.expire_unstarted_runs(db) >= 1
+    db.refresh(job)
+    db.refresh(host)
+    assert job.status == "cancelled" and stage.status == "failed" and "Expired" in stage.output
+    assert host.status == "unknown"                       # free for another run
+    expired = db.query(models.AuditLog).filter(models.AuditLog.action == "run_expired").all()
+    assert any(host.hostname in (r.detail or "") for r in expired)
+
+
+def test_a_run_inside_its_wait_is_left_alone(db):
+    _, job, _ = _waiting_run(db, hours_ago=3, last_seen_hours_ago=9)
+    jobs_engine.expire_unstarted_runs(db)
+    db.refresh(job)
+    assert job.status == "running"
+
+
+def test_a_run_the_machine_has_polled_for_is_never_expired(db):
+    """It may be doing the work: slow or dead is a person's call, not a timer's."""
+    _, job, _ = _waiting_run(db, hours_ago=30, last_seen_hours_ago=29)
+    jobs_engine.expire_unstarted_runs(db)
+    db.refresh(job)
+    assert job.status == "running"
+
+
+def test_a_machine_that_checks_in_rarely_gets_two_of_its_own_intervals(db):
+    _, job, _ = _waiting_run(db, hours_ago=5, last_seen_hours_ago=9, poll_interval=6 * 3600)
+    jobs_engine.expire_unstarted_runs(db)
+    db.refresh(job)
+    assert job.status == "running"                        # 5h waited, but it only checks in every 6h
+
+
+def test_expiry_can_be_turned_off_and_the_setting_is_validated(db, client, logged_in):
+    from app.settings_store import set_setting
+    _, job, _ = _waiting_run(db, hours_ago=500, last_seen_hours_ago=600)
+    set_setting(db, "run_start_timeout_hours", "0")
+    assert jobs_engine.expire_unstarted_runs(db) == 0
+    db.refresh(job)
+    assert job.status == "running"
+
+    logged_in(role="admin", username="expiry-admin")
+    assert client.put("/settings/run_start_timeout_hours", json={"value": "soon"}).status_code == 400
+    assert client.put("/settings/run_start_timeout_hours", json={"value": "12"}).status_code == 200
+    job.status = "cancelled"                              # don't leave a 500-hour-old run for other tests' passes
+    db.commit()

@@ -1593,6 +1593,17 @@ doesn't spam:
 - **A host going offline** — logged once on the healthy/stale → offline
   transition, not on every pass while it stays offline.
 
+One case is acted on rather than only reported: **a run its machine
+never collected**. A step handed to an agent waits to be polled for; if
+the machine is off, the run would otherwise start whenever it came back,
+possibly days later and outside the window it was meant for, holding the
+host's one run slot (and any one-at-a-time batch behind it) until then.
+A run whose machine has made no contact since the step became ready is
+cancelled after `run_start_timeout_hours` (Settings, default 4; `0`
+waits forever), or two of the machine's own poll intervals if that is
+longer. It is logged and notified as `run_expired`. A machine that has
+polled since is never expired this way: it may be doing the work.
+
 None of this auto-fails a stuck stage or takes any action beyond
 detecting and surfacing it — the controller can't reliably tell "actually
 dead" from "legitimately slow" from here, so a human still decides via
