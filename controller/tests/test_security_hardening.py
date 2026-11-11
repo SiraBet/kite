@@ -197,14 +197,17 @@ def test_a_write_from_another_origin_is_refused(client, logged_in, db):
     assert db.query(models.ChecklistItem).count() == before
 
 
-def test_writes_from_the_console_and_from_non_browsers_still_work(client, logged_in):
+def test_writes_from_the_console_and_from_non_browsers_still_work(client, logged_in, db):
+    from app import models
     logged_in(role="admin", username="origin-admin-2")
     same = client.post("/checklist-items", json={"text": "from the console"}, headers={"Origin": "http://testserver"})
     assert same.status_code == 200, same.text
     no_origin = client.post("/checklist-items", json={"text": "from a script"})      # agents, curl, the MCP server
     assert no_origin.status_code == 200, no_origin.text
-    for created in (same, no_origin):
-        client.delete(f"/checklist-items/{created.json()['id']}")
+    # Removed directly: the API keeps the last item, which these may be.
+    db.query(models.ChecklistItem).filter(
+        models.ChecklistItem.id.in_([same.json()["id"], no_origin.json()["id"]])).delete(synchronize_session=False)
+    db.commit()
 
 
 def test_reads_are_not_affected_by_origin(client, logged_in):
