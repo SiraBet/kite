@@ -110,3 +110,20 @@ def test_an_admin_cant_demote_themselves(client, logged_in, db):
     db.refresh(me)
     assert me.role == "admin"
     assert client.patch(f"/users/{me.id}", json={"display_name": "Still Admin"}).status_code == 200
+
+
+def test_create_user_refuses_a_name_that_differs_only_by_case(client, logged_in):
+    """Sign-in treats those as one account, so two of them could never both be used."""
+    logged_in(role="admin", username="case-admin")
+    body = {"password": "long-enough-password", "role": "operator"}
+    assert client.post("/users", json={"username": "Morgan", **body}).status_code == 200
+    resp = client.post("/users", json={"username": "morgan", **body})
+    assert resp.status_code == 409
+    assert "Morgan" in resp.json()["detail"]
+
+
+def test_create_user_trims_the_username(client, logged_in):
+    logged_in(role="admin", username="trim-admin")
+    body = {"password": "long-enough-password", "role": "operator"}
+    assert client.post("/users", json={"username": "  riley ", **body}).json()["username"] == "riley"
+    assert client.post("/users", json={"username": "   ", **body}).status_code == 400

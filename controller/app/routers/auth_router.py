@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from .. import models, schemas, audit, ldap_auth
 from ..db import get_db
-from ..auth import (get_current_user, create_session, use_secure_cookie,
+from ..auth import (get_current_user, create_session, find_user, use_secure_cookie,
                     SESSION_COOKIE_NAME, SESSION_TTL_HOURS)
 from ..security import verify_password, hash_password, hash_secret, PasswordHasherBusy
 from ..rate_limit import limiter
@@ -47,7 +47,8 @@ def login(request: Request, payload: schemas.LoginRequest, response: Response, d
 
 
 def _login(request: Request, payload: schemas.LoginRequest, response: Response, db: DbSession):
-    user = db.query(models.User).filter(models.User.username == payload.username).first()
+    username = payload.username.strip()
+    user = find_user(db, username)
 
     if user and user.auth_source == "local":
         if not verify_password(payload.password, user.password_hash):
@@ -59,15 +60,17 @@ def _login(request: Request, payload: schemas.LoginRequest, response: Response, 
         # login for this LDAP user" and "an existing LDAP user logging in
         # again", since neither case has (or should trust) a local
         # password to check.
-        if not ldap_auth.authenticate(db, payload.username, payload.password):
+        if not ldap_auth.authenticate(db, username, payload.password):
             verify_password(payload.password, _DUMMY_PASSWORD_HASH)  # burn the same time a real check would take
             raise HTTPException(401, "Invalid username or password")
         if not user:
+            # Stored in lower case, so every spelling of the name the
+            # directory accepts lands on this one account (auth.find_user).
             user = models.User(
-                username=payload.username,
+                username=username.lower(),
                 password_hash=LDAP_MANAGED_SENTINEL,
                 role=ldap_auth.ldap_config(db)["default_role"],
-                display_name=payload.username,
+                display_name=username,
                 auth_source="ldap",
             )
             db.add(user)

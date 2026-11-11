@@ -169,6 +169,57 @@ def test_login_existing_ldap_user_reauthenticates_every_time_not_cached(db, clie
     assert resp.status_code == 401  # no locally-cached password ever lets this succeed instead
 
 
+# ---------- one account per person, however the name is typed ----------
+# A directory matches names without regard to case. If "Alice" and "alice"
+# were separate accounts here, a role change made to one could be undone by
+# signing in as the other and being provisioned again at the default role.
+
+def test_login_with_different_case_reuses_the_account_and_its_role(db, client):
+    _configure(db, ldap_default_role="operator")
+    with patch("app.ldap_auth.authenticate", return_value=True):
+        assert client.post("/auth/login", json={"username": "casey", "password": "pw"}).status_code == 200
+    account = db.query(models.User).filter(models.User.username == "casey").one()
+    account.role = "viewer"   # an admin restricts the account
+    db.commit()
+
+    with patch("app.ldap_auth.authenticate", return_value=True):
+        resp = client.post("/auth/login", json={"username": "CASEY", "password": "pw"})
+    assert resp.status_code == 200
+    assert (resp.json()["username"], resp.json()["role"]) == ("casey", "viewer")
+    assert db.query(models.User).filter(models.User.username.ilike("casey")).count() == 1
+
+
+def test_first_ldap_login_stores_the_username_in_lower_case(db, client):
+    _configure(db)
+    with patch("app.ldap_auth.authenticate", return_value=True) as mock_ldap:
+        resp = client.post("/auth/login", json={"username": "  Jordan.Lee ", "password": "pw"})
+    assert resp.status_code == 200
+    assert resp.json()["username"] == "jordan.lee"
+    assert resp.json()["display_name"] == "Jordan.Lee"
+    assert mock_ldap.call_args.args[1] == "Jordan.Lee"   # the directory is asked about the name as typed
+
+
+def test_local_account_matched_by_case_still_checks_its_own_password(db, client):
+    from conftest import make_user
+    _configure(db)
+    make_user(db, "LocalMixed", "admin", password="localpass123")
+    with patch("app.ldap_auth.authenticate", return_value=True) as mock_ldap:
+        wrong = client.post("/auth/login", json={"username": "localmixed", "password": "not-the-password"})
+        right = client.post("/auth/login", json={"username": "localmixed", "password": "localpass123"})
+    assert wrong.status_code == 401
+    assert right.status_code == 200 and right.json()["username"] == "LocalMixed"
+    assert mock_ldap.call_count == 0   # never handed to the directory, never provisioned a second account
+
+
+def test_accounts_that_already_differ_only_by_case_stay_separate(db, client):
+    from conftest import make_user
+    make_user(db, "legacy", "viewer", password="lower-password-1")
+    make_user(db, "LEGACY", "admin", password="upper-password-1")
+    lower = client.post("/auth/login", json={"username": "legacy", "password": "lower-password-1"})
+    upper = client.post("/auth/login", json={"username": "LEGACY", "password": "upper-password-1"})
+    assert (lower.json()["role"], upper.json()["role"]) == ("viewer", "admin")
+
+
 # ---------- password endpoints are blocked for ldap-sourced accounts ----------
 
 def test_change_password_rejected_for_ldap_user(db, client):

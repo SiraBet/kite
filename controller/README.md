@@ -1287,7 +1287,10 @@ against the directory on every login — nothing is cached locally, so
 revoking directory access takes effect immediately, and
 `/auth/change-password` and the admin "Reset password" action both
 refuse outright for these accounts (there's no local password to
-change). Group-to-role mapping isn't built — every LDAP login
+change). Usernames are matched without regard to case, as the
+directory matches them: `Alice` and `alice` sign in to the same account, and
+an LDAP account is stored in lower case, so a role set on it holds however
+the name is typed. Group-to-role mapping isn't built — every LDAP login
 provisions at one configured default role; a real mapping is a
 reasonable follow-up, not implemented here. Not tested against a real
 directory server in this environment (none available) — the search+bind

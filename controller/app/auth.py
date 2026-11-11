@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session as DbSession
 
 from . import models
@@ -36,6 +37,29 @@ _VIEWER_WRITABLE_PATHS = ("/auth/change-password", "/tokens")
 # reviewing the token list, not an access log -- so it is written at most
 # this often, rather than turning every read into a database write.
 TOKEN_LAST_USED_RESOLUTION = timedelta(minutes=1)
+
+
+def find_user(db: DbSession, username: str):
+    """
+    The account a typed username belongs to: the exact one if there is
+    one, otherwise the one that differs only by case.
+
+    Directories match names without regard to case, so "Alice" and
+    "alice" are one person to LDAP. If they were two accounts here, a
+    role change or removal made to one could be sidestepped by signing in
+    as the other and being provisioned afresh. The exact match is tried
+    first so that accounts created before this rule, which may differ
+    only by case, each stay reachable under their own name.
+    """
+    username = (username or "").strip()
+    if not username:
+        return None
+    exact = db.query(models.User).filter(models.User.username == username).first()
+    if exact:
+        return exact
+    return (db.query(models.User)
+            .filter(func.lower(models.User.username) == username.lower())
+            .order_by(models.User.id).first())
 
 
 def create_session(db: DbSession, user: models.User) -> str:
