@@ -254,6 +254,8 @@ def update_setting(key: str, payload: schemas.SettingUpdate, db: DbSession = Dep
     if key in ("require_ticket", "patch_skip_uninstallable", "snapshot_cleanup", "vuln_feed_enabled",
                "notify_smtp_verify_cert") and payload.value not in ("true", "false"):
         raise HTTPException(400, f"{key} must be 'true' or 'false'")
+    if key in ("ldap_verify_cert", "ldap_starttls") and payload.value not in ("true", "false"):
+        raise HTTPException(400, f"{key} must be 'true' or 'false'")
     if key == "ldap_default_role" and payload.value not in ROLE_RANK:
         raise HTTPException(400, f"ldap_default_role must be one of {list(ROLE_RANK)}")
     row = set_setting(db, key, payload.value)

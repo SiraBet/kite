@@ -76,6 +76,12 @@ DEFAULTS = {
     "ldap_user_base_dn": "",     # e.g. "ou=people,dc=example,dc=com"
     "ldap_user_filter": "(uid={username})",  # '{username}' is filter-escaped before substitution -- see app/ldap_auth.py
     "ldap_default_role": "operator",  # role assigned the first time a given LDAP user logs in
+    # Transport checks, on unless set to "false" (app/ldap_auth.py's
+    # _transport): the directory's certificate must be valid for its
+    # name, and an ldap:// address is upgraded with StartTLS.
+    "ldap_verify_cert": "",
+    "ldap_starttls": "",
+    "ldap_ca_cert_file": "",     # PEM file on the controller for a private CA; blank = the system's CAs
 }
 
 # Base names for secrets that get encrypted (app/crypto.py) and stored

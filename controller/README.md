@@ -1284,6 +1284,15 @@ the configured filter, then a second bind as that entry's own DN with
 the password the user typed is what actually decides success or
 failure — the search account never validates a password itself, and
 nothing from the directory is trusted just because an entry was found.
+The connection itself is checked: an `ldaps://` server must present a
+certificate that is valid for its host name, and an `ldap://` address is
+upgraded with StartTLS, under the same check, before any bind. The
+certificate is verified against the system's CAs, or against
+`ldap_ca_cert_file` (a PEM file on the controller) for a directory with
+a private CA. Two admin-only settings relax this for a lab, through
+`PUT /settings/{key}`: `ldap_verify_cert` = `false` keeps the encryption
+but stops checking the certificate, and `ldap_starttls` = `false` lets
+an `ldap://` address stay in clear text.
 The username is filter-escaped (`ldap3.utils.conv.escape_filter_chars`)
 before being substituted into the search filter — the LDAP-injection
 equivalent of a parameterized SQL query.
