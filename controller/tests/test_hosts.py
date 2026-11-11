@@ -310,3 +310,22 @@ def test_a_host_still_checking_in_can_be_removed_and_its_agent_is_then_turned_aw
     logged_in(role="admin", username="host-delete-live")
     assert client.delete(f"/hosts/{host.id}").status_code == 200
     assert client.get(f"/agent/{host.id}/jobs/next", headers=hdr).status_code in (401, 403, 404)
+
+
+def test_editing_a_host_is_in_the_activity_log(client, logged_in, db):
+    """The VM link and rollback backend decide what gets snapshotted and restored; changing
+    them left no trace of who did it."""
+    logged_in(role="admin", username="host-edit-admin")
+    host, _ = make_host(db)
+
+    assert client.patch(f"/hosts/{host.id}", json={"proxmox_vmid": 612, "team": "Edge"}).status_code == 200
+    entry = (db.query(models.AuditLog).filter(models.AuditLog.action == "host_edited")
+             .order_by(models.AuditLog.id.desc()).first())
+    assert entry.actor == "host-edit-admin" and host.hostname in entry.detail
+    assert "proxmox_vmid: unset → 612" in entry.detail and "team: unset → Edge" in entry.detail
+    assert entry.tone == "warning"
+
+    # Saving the same values again changes nothing, and says nothing.
+    count = db.query(models.AuditLog).filter(models.AuditLog.action == "host_edited").count()
+    assert client.patch(f"/hosts/{host.id}", json={"proxmox_vmid": 612, "team": "Edge"}).status_code == 200
+    assert db.query(models.AuditLog).filter(models.AuditLog.action == "host_edited").count() == count
