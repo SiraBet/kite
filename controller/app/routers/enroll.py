@@ -221,15 +221,32 @@ def agent_enroll(request: Request, payload: schemas.AgentEnrollRequest, db: Sess
     if tok.expires_at and tok.expires_at < datetime.utcnow():
         raise HTTPException(410, "Token expired")
 
-    host, secret = _upsert_host(
-        db, hostname=tok.hostname, team=tok.team, role=tok.role,
-        os_version=payload.os_version, os_family=payload.os_family,
-        smbios_uuid=payload.smbios_uuid, poll_interval_seconds=payload.poll_interval_seconds,
-        proxmox_vmid=payload.proxmox_vmid,
-    )
-
-    tok.used = True
+    # Claimed before it is acted on, in one conditional UPDATE: checking
+    # `used` above and setting it after the host was written let two
+    # requests arriving together both pass the check, and each walk away
+    # with a credential for the host. Only one of them can change this row.
+    claimed = (db.query(models.EnrollmentToken)
+               .filter(models.EnrollmentToken.id == tok.id, models.EnrollmentToken.used == False)  # noqa: E712
+               .update({"used": True}, synchronize_session=False))
     db.commit()
+    if not claimed:
+        raise HTTPException(409, "Token already used")
+
+    try:
+        host, secret = _upsert_host(
+            db, hostname=tok.hostname, team=tok.team, role=tok.role,
+            os_version=payload.os_version, os_family=payload.os_family,
+            smbios_uuid=payload.smbios_uuid, poll_interval_seconds=payload.poll_interval_seconds,
+            proxmox_vmid=payload.proxmox_vmid,
+        )
+    except HTTPException:
+        # Refused (the hostname belongs to other hardware): nothing was
+        # issued, so the token is still good for the machine it was meant for.
+        db.rollback()
+        db.query(models.EnrollmentToken).filter(models.EnrollmentToken.id == tok.id).update(
+            {"used": False}, synchronize_session=False)
+        db.commit()
+        raise
     audit.log(db, actor="system", role="agent", action="host_enrolled",
               detail=f"{host.hostname} ({payload.os_version}) via one-time token", tone="success")
     return schemas.AgentEnrollResponse(host_id=host.id, agent_secret=secret)

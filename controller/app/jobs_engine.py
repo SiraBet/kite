@@ -20,13 +20,14 @@ host directly. The agent owns the guest; the controller owns the
 hypervisor (Proxmox) and orchestration.
 """
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from . import models, audit, groups, monitoring, rollback, snapshot_retention
 from .config import settings
 from .logging_config import logger
+from .settings_store import get_setting
 
 # _run_controller_stage outcomes.
 DONE, FAILED, WAITING = "done", "failed", "waiting"
@@ -255,6 +256,66 @@ def complete_due_controller_stages(db: Session) -> int:
         advance_job(db, job)
         completed += 1
     return completed
+
+
+def _start_timeout(db: Session) -> timedelta:
+    """Settings -> run_start_timeout_hours; zero (or anything unreadable) turns expiry off."""
+    try:
+        return timedelta(hours=max(0, int(get_setting(db, "run_start_timeout_hours") or 0)))
+    except ValueError:
+        return timedelta(0)
+
+
+def expire_unstarted_runs(db: Session, now: datetime = None) -> int:
+    """
+    Cancel runs whose machine never came to collect the stage waiting for
+    it. Returns how many were cancelled.
+
+    A stage handed to an agent just waits to be polled for. With the
+    machine off or its agent stopped, that wait had no end: the run
+    started whenever the agent came back, days later and well outside the
+    window it was meant for, and until then it held the host's one run
+    slot and any one-at-a-time batch queued behind it.
+
+    Only a stage nobody has collected is expired: the machine's last
+    contact is older than the stage's start. A machine that has polled
+    since may be doing the work, and "slow or dead?" stays a person's call
+    (see monitoring.is_stage_stuck and Force stop). The wait is never
+    shorter than two of the machine's own poll intervals, so a machine
+    that checks in every few hours isn't expired between two check-ins.
+    """
+    timeout = _start_timeout(db)
+    if not timeout:
+        return 0
+    now = now or datetime.utcnow()
+    expired = 0
+    for job in db.query(models.Job).filter(models.Job.status == "running").all():
+        stages = sorted(job.stages, key=lambda s: s.stage_index)
+        if job.current_stage_index >= len(stages):
+            continue
+        stage, host = stages[job.current_stage_index], job.host
+        if stage.executor != "agent" or stage.status != "running" or not stage.started_at or not host:
+            continue
+        wait = max(timeout, timedelta(seconds=2 * (host.poll_interval_seconds or 0)))
+        if now - stage.started_at < wait:
+            continue
+        if host.last_seen and host.last_seen >= stage.started_at:
+            continue
+        hours = int(wait.total_seconds() // 3600)
+        stage.status = "failed"
+        stage.finished_at = now
+        stage.output = (f"Expired: {host.hostname} didn't check in within {hours} hours of this step being "
+                        "ready, so the run was cancelled. Nothing in this step ran on the machine.")
+        job.status = "cancelled"
+        _release_host_after_failure(job)
+        db.commit()
+        audit.log(db, actor="system", role="controller", action="run_expired",
+                  detail=f"{host.hostname} — job {job.id} cancelled at '{stage.name}': no contact from the "
+                         f"machine in {hours} hours", tone="warning")
+        logger.warning("run_expired job_id=%s host=%s stage=%s", job.id, host.hostname, stage.name)
+        job_finished(db, job)
+        expired += 1
+    return expired
 
 
 async def deferred_loop():

@@ -264,9 +264,11 @@ async def monitor_loop():
     from .db import SessionLocal
 
     def one_pass():
+        from . import jobs_engine   # local: jobs_engine imports this module
         db = SessionLocal()
         try:
             detect_and_log_transitions(db)
+            jobs_engine.expire_unstarted_runs(db)
             purged = purge_expired_sessions(db)
             if purged:
                 logger.info("expired_sessions_purged count=%s", purged)

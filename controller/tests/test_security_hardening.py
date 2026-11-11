@@ -248,3 +248,92 @@ def test_an_unknown_setting_is_refused_rather_than_stored(client, logged_in, db)
     assert db.query(models.Setting).filter(models.Setting.key == "requrie_ticket").first() is None
     assert client.put("/settings/notify_smtp_from", json={"value": "x" * 2001}).status_code == 400
     assert client.put("/settings/notify_smtp_from", json={"value": ""}).status_code == 200
+
+
+# ---------- writes must come from the console's own origin ----------
+# SameSite=Lax treats every port and sibling service on the controller's
+# host name as the same site, so the cookie alone doesn't keep them out.
+
+def test_a_write_from_another_origin_is_refused(client, logged_in, db):
+    from app import models
+    logged_in(role="admin", username="origin-admin")
+    before = db.query(models.ChecklistItem).count()
+    for origin in ("https://evil.example", "http://testserver:8081", "null"):
+        resp = client.post("/checklist-items", json={"text": "planted"}, headers={"Origin": origin})
+        assert resp.status_code == 403, origin
+    assert db.query(models.ChecklistItem).count() == before
+
+
+def test_writes_from_the_console_and_from_non_browsers_still_work(client, logged_in):
+    logged_in(role="admin", username="origin-admin-2")
+    same = client.post("/checklist-items", json={"text": "from the console"}, headers={"Origin": "http://testserver"})
+    assert same.status_code == 200, same.text
+    no_origin = client.post("/checklist-items", json={"text": "from a script"})      # agents, curl, the MCP server
+    assert no_origin.status_code == 200, no_origin.text
+    for created in (same, no_origin):
+        client.delete(f"/checklist-items/{created.json()['id']}")
+
+
+def test_reads_are_not_affected_by_origin(client, logged_in):
+    logged_in(role="viewer", username="origin-viewer")
+    assert client.get("/hosts", headers={"Origin": "https://evil.example"}).status_code == 200
+
+
+# ---------- an agent's reports have a size ----------
+# Everything an agent sends is stored and shown, and one machine could
+# otherwise fill the database with a single request. Over-long values are
+# cut rather than refused, so the rest of the report still lands.
+
+def _agent(db):
+    from conftest import make_host
+    host, secret = make_host(db)
+    return host, {"Authorization": f"Bearer {secret}"}
+
+
+def test_an_oversized_inventory_is_cut_down_not_stored_whole(client, db):
+    from app import models, schemas
+    host, auth = _agent(db)
+    report = {
+        "runtime": "docker",
+        "containers": [{"name": f"c{i}", "image": "img"} for i in range(schemas.MAX_REPORTED_CONTAINERS + 50)],
+        "updates": [{"package": "p" * 5000, "new_version": "1", "advisory": "a" * 5000, "severity": "critical"}],
+        "updates_ok": True,
+        "update_sources": [{"name": "os", "ok": True}],
+    }
+    resp = client.post(f"/agent/{host.id}/inventory", json=report, headers=auth)
+    assert resp.status_code == 200, resp.text
+    assert db.query(models.Container).filter(models.Container.host_id == host.id).count() == schemas.MAX_REPORTED_CONTAINERS
+    update = db.query(models.PendingUpdate).filter(models.PendingUpdate.host_id == host.id).one()
+    assert len(update.package) == 500 and len(update.advisory) == 500
+    assert update.severity == "critical"                       # the rest of the row is intact
+
+
+def test_stage_output_keeps_its_end(client, db):
+    """The end of the output is where a failed stage says what went wrong."""
+    from app import jobs_engine, models
+    host, auth = _agent(db)
+    host.rollback_backend = "none"
+    job = models.Job(host_id=host.id, hostname=host.hostname, ticket_id="", operator="t", operator_role="admin")
+    db.add(job)
+    db.commit()
+    for i, (name, executor) in enumerate(models.STAGE_SEQUENCE):
+        db.add(models.JobStage(job_id=job.id, stage_index=i, name=name, executor=executor))
+    db.commit()
+    jobs_engine.advance_job(db, job)
+    stage = next(s for s in sorted(job.stages, key=lambda s: s.stage_index) if s.status == "running")
+
+    output = "x" * 200_000 + "THE ACTUAL ERROR"
+    resp = client.post(f"/agent/{host.id}/jobs/{job.id}/stages/{stage.name}/report",
+                       json={"status": "failed", "output": output}, headers=auth)
+    assert resp.status_code == 200, resp.text
+    db.refresh(stage)
+    assert len(stage.output) == 64_000 and stage.output.endswith("THE ACTUAL ERROR")
+
+
+def test_enrollment_text_is_bounded(client, db):
+    from app import models
+    resp = client.post("/agent/self-enroll", json={
+        "secret": "test-enroll-secret", "hostname": "bounded-host", "os_version": "v" * 10_000, "os_family": "rocky9",
+    })
+    assert resp.status_code == 200, resp.text
+    assert len(db.query(models.Host).filter(models.Host.hostname == "bounded-host").one().os_version) == 200

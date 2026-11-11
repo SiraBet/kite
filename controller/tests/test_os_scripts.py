@@ -72,3 +72,30 @@ def test_delete_requires_admin(client, logged_in):
     logged_in(role="operator", username="scripts-operator")
     resp = client.delete("/os-scripts/rocky8/patch")
     assert resp.status_code == 403
+
+
+def test_an_uploaded_filename_is_only_ever_a_label(client, logged_in, db):
+    """It is echoed back in a Content-Disposition header, where a quote ends the value."""
+    logged_in(role="admin", username="script-name-admin")
+    for sent, kept in [("../../etc/cron.d/x.sh", "x.sh"),
+                       ("C:\\Users\\me\\patch.ps1", "patch.ps1"),
+                       ("...", "script.sh")]:
+        resp = _upload(client, "name-family", "patch", "#!/bin/sh\ntrue\n", filename=sent)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["filename"] == kept, sent
+    # (An HTTP client escapes a quote before sending it, so that one is checked directly.)
+    from app.routers.os_scripts import _safe_filename
+    assert _safe_filename('evil".sh') == "evil_.sh"
+    assert _safe_filename("line\r\nbreak.sh") == "line__break.sh"
+    download = client.get("/os-scripts/name-family/patch/download")
+    assert download.headers["content-disposition"] == 'attachment; filename="script.sh"'
+    client.delete("/os-scripts/name-family/patch")
+
+
+def test_a_script_upload_has_a_size_limit(client, logged_in):
+    from app.routers.os_scripts import MAX_SCRIPT_BYTES
+    logged_in(role="admin", username="script-size-admin")
+    assert _upload(client, "size-family", "patch", "#" * MAX_SCRIPT_BYTES).status_code == 200
+    too_big = _upload(client, "size-family", "patch", "#" * (MAX_SCRIPT_BYTES + 1))
+    assert too_big.status_code == 413
+    client.delete("/os-scripts/size-family/patch")

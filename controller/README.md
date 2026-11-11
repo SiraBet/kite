@@ -1284,6 +1284,15 @@ the configured filter, then a second bind as that entry's own DN with
 the password the user typed is what actually decides success or
 failure — the search account never validates a password itself, and
 nothing from the directory is trusted just because an entry was found.
+The connection itself is checked: an `ldaps://` server must present a
+certificate that is valid for its host name, and an `ldap://` address is
+upgraded with StartTLS, under the same check, before any bind. The
+certificate is verified against the system's CAs, or against
+`ldap_ca_cert_file` (a PEM file on the controller) for a directory with
+a private CA. Two admin-only settings relax this for a lab, through
+`PUT /settings/{key}`: `ldap_verify_cert` = `false` keeps the encryption
+but stops checking the certificate, and `ldap_starttls` = `false` lets
+an `ldap://` address stay in clear text.
 The username is filter-escaped (`ldap3.utils.conv.escape_filter_chars`)
 before being substituted into the search filter — the LDAP-injection
 equivalent of a parameterized SQL query.
@@ -1418,7 +1427,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Visit `http://<control-vm>:8000/` for the console itself, or
-`http://<control-vm>:8000/docs` for interactive API docs (Swagger UI).
+`http://<control-vm>:8000/docs` for interactive API docs (Swagger UI),
+once enabled with `KITE_API_DOCS=true`. They are off by default: `/docs`,
+`/redoc` and `/openapi.json` answer without sign-in.
 The frontend is served by the controller directly (same origin, no CORS
 config needed for normal use) from `frontend/kite.html`.
 
@@ -1568,10 +1579,12 @@ reports back via `POST /agent/{host_id}/jobs/{job_id}/stages/{name}/report`.
 
 ## Metrics & monitoring
 
-`GET /metrics` — Prometheus exposition format, no auth (same as every
-Prometheus exporter; restrict at the network/firewall level if you don't
-want it public, not something the app itself gates). Only aggregate
-counts, never hostnames or anything host-identifying:
+`GET /metrics` — Prometheus exposition format, open by default (same as
+every Prometheus exporter; restrict at the network/firewall level
+first). Where that isn't enough, set `KITE_METRICS_TOKEN` and the
+endpoint requires `Authorization: Bearer <token>`; in Prometheus that is
+`authorization: {credentials: <token>}` on the scrape job. Only
+aggregate counts, never hostnames or anything host-identifying:
 
 - `kite_hosts_connectivity{tier="healthy|stale|offline"}` — same
   three-tier logic as the Fleet dashboard (see "Fleet connectivity"
@@ -1601,6 +1614,17 @@ doesn't spam:
   minutes, not tens of them.
 - **A host going offline** — logged once on the healthy/stale → offline
   transition, not on every pass while it stays offline.
+
+One case is acted on rather than only reported: **a run its machine
+never collected**. A step handed to an agent waits to be polled for; if
+the machine is off, the run would otherwise start whenever it came back,
+possibly days later and outside the window it was meant for, holding the
+host's one run slot (and any one-at-a-time batch behind it) until then.
+A run whose machine has made no contact since the step became ready is
+cancelled after `run_start_timeout_hours` (Settings, default 4; `0`
+waits forever), or two of the machine's own poll intervals if that is
+longer. It is logged and notified as `run_expired`. A machine that has
+polled since is never expired this way: it may be doing the work.
 
 None of this auto-fails a stuck stage or takes any action beyond
 detecting and surfacing it — the controller can't reliably tell "actually

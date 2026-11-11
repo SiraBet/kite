@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import List
 
@@ -10,6 +11,23 @@ from ..db import get_db
 from ..auth import get_current_user, require_role
 
 router = APIRouter(prefix="/os-scripts", tags=["os-scripts"])
+
+# A stage script is a page or two of shell or PowerShell. It is stored in
+# the database, kept again in history on every replacement, and sent whole
+# to every matching agent on every run.
+MAX_SCRIPT_BYTES = 1024 * 1024
+
+
+def _safe_filename(name: str) -> str:
+    """
+    The uploaded file's own name, reduced to something that is only ever
+    a label: no directories, and no characters that mean anything inside
+    the Content-Disposition header it is later sent back in (a quote ends
+    the value, a line break ends the header).
+    """
+    base = re.split(r"[\\/]", name or "")[-1]
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]", "_", base).strip(" .")[:128]
+    return cleaned or "script.sh"
 
 
 @router.get("", response_model=List[schemas.OsScriptOut])
@@ -46,7 +64,7 @@ def download_script(os_family: str, stage_name: str, db: Session = Depends(get_d
     return Response(
         content=s.content,
         media_type="text/x-sh",
-        headers={"Content-Disposition": f'attachment; filename="{s.filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(s.filename)}"'},
     )
 
 
@@ -70,7 +88,9 @@ async def upload_script(
         if problems:
             raise HTTPException(400, " ".join(problems))
 
-    raw = await file.read()
+    raw = await file.read(MAX_SCRIPT_BYTES + 1)
+    if len(raw) > MAX_SCRIPT_BYTES:
+        raise HTTPException(413, f"A stage script can be at most {MAX_SCRIPT_BYTES // 1024} KB")
     try:
         content = raw.decode("utf-8")
     except UnicodeDecodeError as e:
@@ -89,7 +109,7 @@ async def upload_script(
             content=existing.content, uploaded_by=existing.uploaded_by,
             uploaded_at=existing.uploaded_at, note="replaced",
         ))
-        existing.filename = file.filename or "script.sh"
+        existing.filename = _safe_filename(file.filename)
         existing.content = content
         existing.tested = False  # new content - the tested flag doesn't carry over
         existing.uploaded_by = user.username
@@ -98,7 +118,7 @@ async def upload_script(
     else:
         row = models.OsScript(
             os_family=os_family, stage_name=stage_name,
-            filename=file.filename or "script.sh", content=content, uploaded_by=user.username,
+            filename=_safe_filename(file.filename), content=content, uploaded_by=user.username,
         )
         db.add(row)
 
