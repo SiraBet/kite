@@ -96,10 +96,15 @@ def _next_host_id(db: Session) -> int:
     One past every id a host has ever had. hosts.id isn't AUTOINCREMENT,
     so SQLite would hand a deleted top host's id to the next one; jobs keep
     the id of the host they ran on, so they're the record of ids used.
+    So are update rules: a rule goes on naming a machine after it's
+    removed, and a new machine taking that id would inherit the rule.
     """
     from sqlalchemy import func
+    named_in_rules = [int(value) for (value,) in db.query(models.PatchDefTarget.value)
+                      .filter(models.PatchDefTarget.kind == "host").all() if value.isdigit()]
     top = max(db.query(func.max(models.Host.id)).scalar() or 0,
-              db.query(func.max(models.Job.host_id)).scalar() or 0)
+              db.query(func.max(models.Job.host_id)).scalar() or 0,
+              *named_in_rules)
     return top + 1
 
 
