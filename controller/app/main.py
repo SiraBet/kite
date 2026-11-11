@@ -3,10 +3,11 @@ import hmac
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST
 from slowapi.errors import RateLimitExceeded
@@ -155,6 +156,43 @@ async def security_headers(request, call_next):
     if request.url.path == "/" or request.url.path.startswith("/ui/"):
         response.headers.setdefault("Cache-Control", "no-cache")
     return response
+
+_ALLOWED_ORIGINS = {o.strip().lower().rstrip("/") for o in settings.cors_origins.split(",") if o.strip()}
+
+
+@app.middleware("http")
+async def same_origin_writes(request, call_next):
+    """
+    Refuse a state-changing request that a browser says came from another
+    site.
+
+    The session cookie is SameSite=Lax, which keeps other *sites* from
+    riding it but treats every port and sibling service on the same host
+    name as the same site. Uploading a stage script is an ordinary form
+    post whose result runs as root across the fleet, so "something else
+    served from this host name" is not a boundary to leave to the cookie.
+
+    A browser attaches Origin to every cross-origin request and to every
+    same-origin one that isn't a GET or HEAD; it has to match the host the
+    request was sent to (or an origin listed in CORS_ORIGINS). Requests
+    with no Origin are not browsers making a cross-site call -- agents,
+    the MCP server, curl, the ticket webhook -- and are judged by their
+    own credentials as before.
+    """
+    origin = request.headers.get("origin")
+    if origin is not None and request.method not in ("GET", "HEAD", "OPTIONS"):
+        sent_from = urlsplit(origin).netloc.lower()
+        # A proxy that rewrites Host reports the name the browser used in
+        # X-Forwarded-Host. A page on another site can't set that header
+        # on a form post, and a scripted request that tries is stopped by
+        # the browser's preflight, so honouring it opens nothing.
+        sent_to = {request.headers.get("host", "").lower(),
+                   request.headers.get("x-forwarded-host", "").split(",")[0].strip().lower()}
+        allowed = "*" in _ALLOWED_ORIGINS or origin.lower().rstrip("/") in _ALLOWED_ORIGINS
+        if not allowed and (not sent_from or sent_from not in sent_to):
+            return JSONResponse({"detail": "This request came from another site and was refused."}, status_code=403)
+    return await call_next(request)
+
 
 app.include_router(enroll.router)
 app.include_router(agent.router)
