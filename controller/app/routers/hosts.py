@@ -229,16 +229,18 @@ def delete_host(host_id: int, db: Session = Depends(get_db), user: models.User =
     db.query(models.HostSoftware).filter(models.HostSoftware.host_id == host_id).delete()
     db.query(models.MachineGroupMember).filter(models.MachineGroupMember.host_id == host_id).delete()
     db.query(models.HostVuln).filter(models.HostVuln.host_id == host_id).delete()
-    # Rules aimed at this one machine: the rule stays for whatever else it
-    # targets (and applies to every machine if this was its only target --
-    # so say so in its history, as the Rules page would).
+    # Rules naming this machine keep naming it. A rule with no targets
+    # applies to every machine, so dropping the target of a rule that
+    # named only this one would turn it into a fleet-wide rule. The Rules
+    # page shows such a target as a removed machine, and the id is never
+    # given to another machine (see enroll._next_host_id).
     for t in db.query(models.PatchDefTarget).filter(models.PatchDefTarget.kind == "host",
                                                     models.PatchDefTarget.value == str(host_id)).all():
         rule = db.query(models.PatchDef).filter(models.PatchDef.id == t.def_id).first()
         db.add(models.DefHistory(def_id=t.def_id, pkg_pattern=rule.pkg_pattern if rule else "",
-                                 change=f"no longer applies to {hostname} (removed from the fleet)",
+                                 change=f"{hostname} was removed from the fleet (still named in this rule, "
+                                        f"as removed machine #{host_id})",
                                  by=user.username))
-        db.delete(t)
     db.delete(host)
     db.commit()
     audit.log(db, actor=user.username, role=user.role, action="host_removed", detail=hostname, tone="danger")

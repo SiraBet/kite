@@ -25,22 +25,43 @@ def test_a_new_machine_never_gets_a_removed_ones_id(client, logged_in, db):
     assert new_id > gone_id > top
 
 
-def test_removing_a_machine_takes_its_rule_targets_and_findings(client, logged_in, db):
+def test_removing_a_machine_takes_its_findings_and_leaves_its_rules_scoped(client, logged_in, db):
+    """A rule with no targets applies to every machine: taking a removed machine out of a rule
+    that named only it turned a one-machine rule into a fleet-wide one."""
     logged_in("admin")
     host, _ = make_host(db)
+    bystander, _ = make_host(db)
     hid = host.id
     rule = client.post("/defs", json={"pkg_pattern": "core-low-pkg", "mode": "skip", "reason": "t",
                                       "targets": [{"kind": "host", "value": str(hid)}]}).json()
+    shared = client.post("/defs", json={"pkg_pattern": "core-low-shared", "mode": "skip", "reason": "t",
+                                        "targets": [{"kind": "host", "value": str(hid)},
+                                                    {"kind": "host", "value": str(bystander.id)}]}).json()
     db.add(models.HostVuln(host_id=hid, cve="CVE-2026-1", package="p", installed="1", fixed="2",
                            severity="low", score="", summary="", url="", advisories="", source="distro"))
     db.commit()
     assert client.delete(f"/hosts/{hid}").status_code == 200
     db.expire_all()
-    assert db.query(models.PatchDefTarget).filter_by(kind="host", value=str(hid)).count() == 0
     assert db.query(models.HostVuln).filter_by(host_id=hid).count() == 0
     history = db.query(models.DefHistory).filter_by(def_id=rule["id"]).all()
     assert any("removed from the fleet" in h.change for h in history)
-    client.delete(f"/defs/{rule['id']}")
+
+    # Both rules still name the removed machine, so neither reaches further than it did.
+    after = {d["id"]: d["targets"] for d in client.get("/defs").json()}
+    assert after[rule["id"]] == [{"kind": "host", "value": str(hid)}]
+    assert {"kind": "host", "value": str(hid)} in after[shared["id"]]
+    applied = sorted(r.pkg_pattern for r in groups.rules_for(db, bystander) if r.pkg_pattern.startswith("core-low-"))
+    assert applied == ["core-low-shared"]
+
+    # ...and a machine enrolled later can't take the removed one's id and, with it, the rule.
+    token = client.post("/enroll/tokens", json={"hostname": f"after-{hid}"}).json()["token"]
+    new_id = client.post("/agent/enroll", json={"token": token, "os_version": "1"}).json()["host_id"]
+    assert new_id > hid
+    newcomer = db.get(models.Host, new_id)
+    assert "core-low-pkg" not in [r.pkg_pattern for r in groups.rules_for(db, newcomer)]
+
+    for created in (rule, shared):
+        client.delete(f"/defs/{created['id']}")
 
 
 def test_a_group_named_like_an_os_family_doesnt_hand_out_its_scripts(db):
