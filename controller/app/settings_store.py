@@ -22,6 +22,9 @@ DEFAULTS = {
     # On, dnf hosts run with --nobest --skip-broken and the stage lists
     # what it left behind. apt already holds such packages back.
     "patch_skip_uninstallable": "false",
+    # Hours a run waits for its machine to collect a step before it is
+    # cancelled (jobs_engine.expire_unstarted_runs); 0 = wait forever.
+    "run_start_timeout_hours": "4",
     # Snapshot cleanup (app/snapshot_retention.py): keep the newest N of
     # kite's own snapshots per VM and none older than D days; 0 = no
     # limit of that kind. Snapshots from failed/stopped/running runs and

@@ -85,7 +85,7 @@ def _webhook_url_is_blocked(url: str) -> bool:
 # batch_paused: a rollout stopped on a failure and is waiting for a person,
 # who for a scheduled one isn't watching.
 ALWAYS_NOTIFY_ACTIONS = {"stage_failed", "host_offline", "stage_stuck", "schedule_skipped",
-                          "critical_update_found", "port_opened", "batch_paused"}
+                          "critical_update_found", "port_opened", "batch_paused", "run_expired"}
 OPT_IN_SUCCESS_ACTIONS = {"run_completed"}
 
 _TONE_EMOJI = {"danger": "🔴", "warning": "🟡", "success": "✅"}
