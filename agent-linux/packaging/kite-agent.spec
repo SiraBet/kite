@@ -2,9 +2,9 @@ Name:           kite-agent
 Version:        1.0.0
 Release:        1%{?dist}
 Summary:        kite fleet patch-management agent
-License:        Proprietary
+License:        Apache-2.0
 BuildArch:      noarch
-URL:            https://internal.example/kite
+URL:            https://github.com/SiraBet/kite
 
 Requires:       python3
 Requires:       python3-pip
