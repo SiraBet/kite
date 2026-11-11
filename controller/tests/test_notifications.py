@@ -140,6 +140,28 @@ def test_smtp_certificate_setting_only_takes_true_or_false(client, logged_in):
     assert client.put("/settings/notify_smtp_verify_cert", json={"value": "false"}).status_code == 200
 
 
+def test_a_bad_smtp_port_costs_the_email_not_the_operation(db):
+    """The port was parsed outside the try: a non-numeric value raised out of audit.log itself."""
+    set_setting(db, "notify_smtp_host", "smtp.example.invalid")
+    set_setting(db, "notify_smtp_to", "ops@example.invalid")
+    set_setting(db, "notify_smtp_port", "five-eight-seven")
+    try:
+        with patch("app.notifications.smtplib.SMTP") as mock_smtp_cls:
+            audit.log(db, actor="system", role="controller", action="stage_failed", detail="job 6 failed",
+                      tone="danger")                             # must not raise
+        mock_smtp_cls.assert_not_called()
+    finally:
+        set_setting(db, "notify_smtp_port", "")
+
+
+def test_smtp_port_setting_must_be_a_port(client, logged_in):
+    logged_in(role="admin", username="smtp-port-admin")
+    for bad in ("five-eight-seven", "0", "70000"):
+        assert client.put("/settings/notify_smtp_port", json={"value": bad}).status_code == 400, bad
+    assert client.put("/settings/notify_smtp_port", json={"value": "2525"}).status_code == 200
+    assert client.put("/settings/notify_smtp_port", json={"value": ""}).status_code == 200   # blank = the default
+
+
 def test_notify_email_failure_is_swallowed(db):
     set_setting(db, "notify_smtp_host", "smtp.example.invalid")
     set_setting(db, "notify_smtp_to", "ops@example.invalid")
@@ -162,6 +184,40 @@ def test_audit_log_does_not_notify_for_irrelevant_action(db):
     with patch("app.notifications.requests.post") as mock_post:
         audit.log(db, actor="admin", role="admin", action="user_created", detail="bob (operator)")
     mock_post.assert_not_called()
+
+
+def test_webhooks_do_not_follow_redirects(db):
+    """The address check vets the configured URL; a redirect would send the request
+    wherever the receiver said instead, including the addresses that check refuses."""
+    set_secret(db, "notify_generic_webhook", "https://example.invalid/hook")
+    set_secret(db, "notify_slack_webhook", "https://hooks.slack.example/services/T0/B0/secret")
+    with patch("app.notifications._webhook_url_is_blocked", return_value=False), \
+         patch("app.notifications.requests.post") as mock_post:
+        notifications.notify_if_relevant(db, "stage_failed", "job 7 failed", "danger")
+    assert mock_post.call_count == 2
+    assert all(call.kwargs["allow_redirects"] is False for call in mock_post.call_args_list)
+
+
+def test_a_webhook_url_never_reaches_the_log(db, caplog):
+    """For Slack and most receivers the URL's path is the credential."""
+    import logging
+    import requests
+    secret_url = "https://hooks.slack.example/services/T0/B0/very-secret-path"
+    set_secret(db, "notify_slack_webhook", secret_url)
+    set_secret(db, "notify_generic_webhook", secret_url)
+    failure = requests.ConnectionError(f"HTTPSConnectionPool: Max retries exceeded with url: {secret_url}")
+    kite_log = logging.getLogger(notifications.logger.name)
+    kite_log.addHandler(caplog.handler)
+    try:
+        with patch("app.notifications._webhook_url_is_blocked", return_value=False), \
+             patch("app.notifications.requests.post", side_effect=failure):
+            notifications.notify_if_relevant(db, "stage_failed", "job 8 failed", "danger")
+        with patch("app.notifications._webhook_url_is_blocked", return_value=True):
+            notifications.notify_if_relevant(db, "stage_failed", "job 9 failed", "danger")
+    finally:
+        kite_log.removeHandler(caplog.handler)
+    assert "hooks.slack.example" in caplog.text                # says where, so it can be acted on
+    assert "very-secret-path" not in caplog.text
 
 
 # ---------- _webhook_url_is_blocked (SSRF guard) ----------

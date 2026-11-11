@@ -13,7 +13,17 @@ LDAP-authenticated user is provisioned once (on first successful login)
 with ldap_default_role, and an admin adjusts from there via
 Settings -> Users (PATCH /users/{id}), same as any other role change. A
 real group-to-role mapping is a reasonable follow-up, not built here.
+
+The connection is always authenticated and encrypted unless an admin
+turns that off: every password typed at the sign-in page travels over it,
+and whoever can answer in the directory's place decides who gets in.
+ldap3 on its own checks no certificate, and speaks plain LDAP to an
+ldap:// address. So here an ldaps:// server must present a certificate
+valid for its name, and an ldap:// server is upgraded with StartTLS, held
+to the same check, before anything is sent. See _transport.
 """
+import ssl
+
 import ldap3
 from ldap3.core.exceptions import LDAPException
 from ldap3.utils.conv import escape_filter_chars
@@ -33,7 +43,32 @@ def ldap_config(db) -> dict:
         "user_base_dn": get_setting(db, "ldap_user_base_dn"),
         "user_filter": get_setting(db, "ldap_user_filter") or "(uid={username})",
         "default_role": get_setting(db, "ldap_default_role") or "operator",
+        # Blank means on for both, like the other "safe unless switched off" settings.
+        "verify_cert": get_setting(db, "ldap_verify_cert") != "false",
+        "starttls": get_setting(db, "ldap_starttls") != "false",
+        "ca_cert_file": get_setting(db, "ldap_ca_cert_file"),
     }
+
+
+def _transport(cfg: dict):
+    """
+    (server, auto_bind) for the configured directory.
+
+    The certificate is checked against ldap_ca_cert_file (a PEM file on the
+    controller, for a directory with a private CA) or else the system's
+    CAs, and against the host name in the address. ldap_verify_cert =
+    "false" drops the check and keeps the encryption; ldap_starttls =
+    "false" allows an ldap:// address to stay in clear text. Both are for a
+    lab, and both are an admin's explicit choice.
+    """
+    tls = ldap3.Tls(
+        validate=ssl.CERT_REQUIRED if cfg["verify_cert"] else ssl.CERT_NONE,
+        ca_certs_file=cfg["ca_cert_file"] or None,
+    )
+    server = ldap3.Server(cfg["server_uri"], connect_timeout=_CONNECT_TIMEOUT, tls=tls)
+    if server.ssl or not cfg["starttls"]:
+        return server, True
+    return server, ldap3.AUTO_BIND_TLS_BEFORE_BIND
 
 
 def authenticate(db, username: str, password: str) -> bool:
@@ -54,10 +89,10 @@ def authenticate(db, username: str, password: str) -> bool:
         return False
 
     try:
-        server = ldap3.Server(cfg["server_uri"], connect_timeout=_CONNECT_TIMEOUT)
+        server, auto_bind = _transport(cfg)
         search_conn = ldap3.Connection(
             server, user=(cfg["bind_dn"] or None), password=(cfg["bind_password"] or None),
-            auto_bind=True, receive_timeout=_RECEIVE_TIMEOUT,
+            auto_bind=auto_bind, receive_timeout=_RECEIVE_TIMEOUT,
         )
         try:
             safe_username = escape_filter_chars(username)
@@ -70,7 +105,7 @@ def authenticate(db, username: str, password: str) -> bool:
             search_conn.unbind()
 
         user_conn = ldap3.Connection(server, user=user_dn, password=password,
-                                      auto_bind=True, receive_timeout=_RECEIVE_TIMEOUT)
+                                      auto_bind=auto_bind, receive_timeout=_RECEIVE_TIMEOUT)
         user_conn.unbind()
         return True
     except LDAPException:

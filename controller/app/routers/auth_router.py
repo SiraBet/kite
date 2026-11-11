@@ -144,7 +144,14 @@ def _change_password(request: Request, payload: schemas.ChangePasswordRequest, d
     db.query(models.Session).filter(
         models.Session.user_id == user.id, models.Session.token != hash_secret(current_token or "")
     ).delete()
+    # API tokens too, for the same reason and as an admin's reset already
+    # does: a token is this account's credential for up to a year, and
+    # someone changing their password because it may have leaked expects
+    # everything issued under it to stop working.
+    revoked = db.query(models.ApiToken).filter(models.ApiToken.user_id == user.id).delete()
     db.commit()
-    audit.log(db, actor=user.username, role=user.role, action="password_changed",
-              detail="replaced a temporary password" if was_temporary else "")
-    return {"ok": True}
+    notes = ["replaced a temporary password"] if was_temporary else []
+    if revoked:
+        notes.append(f"{revoked} API token{'' if revoked == 1 else 's'} revoked")
+    audit.log(db, actor=user.username, role=user.role, action="password_changed", detail="; ".join(notes))
+    return {"ok": True, "api_tokens_revoked": revoked}

@@ -1,10 +1,11 @@
 import asyncio
+import hmac
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -88,7 +89,13 @@ async def lifespan(app: FastAPI):
             task.cancel()
 
 
-app = FastAPI(title="kite-controller", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="kite-controller", version="1.0.0", lifespan=lifespan,
+    # Unauthenticated by nature, so only served when asked for (KITE_API_DOCS).
+    docs_url="/docs" if settings.api_docs else None,
+    redoc_url="/redoc" if settings.api_docs else None,
+    openapi_url="/openapi.json" if settings.api_docs else None,
+)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -226,14 +233,24 @@ def health():
 
 
 @app.get("/metrics")
-def metrics():
+def metrics(authorization: str = Header(default="")):
     """
-    Prometheus exposition format, no auth — standard for a scrape
+    Prometheus exposition format. Open by default — standard for a scrape
     endpoint (every Prometheus exporter works this way; access control is
-    a network/firewall concern, not an application one). Only aggregate
-    counts are exposed here, never hostnames or any other host-identifying
-    detail — see app/monitoring.py for exactly what's in it.
+    a network/firewall concern first). Only aggregate counts are exposed
+    here, never hostnames or any other host-identifying detail — see
+    app/monitoring.py for exactly what's in it.
+
+    Where the network can't be relied on for that, KITE_METRICS_TOKEN
+    makes this require a bearer token: the counts still describe the
+    fleet's patch state, and every scrape recomputes them from the
+    database.
     """
+    if settings.metrics_token:
+        expected = f"Bearer {settings.metrics_token}"
+        if not hmac.compare_digest(authorization.encode(), expected.encode()):
+            raise HTTPException(401, "Metrics need a bearer token (KITE_METRICS_TOKEN)",
+                                headers={"WWW-Authenticate": "Bearer"})
     db = SessionLocal()
     try:
         body = monitoring.render_metrics(db)

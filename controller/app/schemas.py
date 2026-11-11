@@ -79,6 +79,28 @@ Identifier = Annotated[str, AfterValidator(_v_identifier)]  # optional key, may 
 Label = Annotated[str, AfterValidator(_v_label)]
 
 
+# ---------- Size limits on what an agent sends ----------
+# An agent's reports are stored and shown, and every one of them comes
+# from a machine that may be broken or hostile. Over-long text is cut and
+# over-long lists are cut short rather than refused: a refused report also
+# throws away everything else it carried, and "could not tell" must still
+# get through. The limits are far above anything a real host produces.
+def _clip(limit: int, keep_end: bool = False):
+    def clip(v):
+        if not isinstance(v, str) or len(v) <= limit:
+            return v
+        return v[-limit:] if keep_end else v[:limit]
+    return Annotated[str, AfterValidator(clip)]
+
+
+Text32, Text200, Text500, Text1000, Text2000 = _clip(32), _clip(200), _clip(500), _clip(1000), _clip(2000)
+# Stage output: the end is where a failure says what went wrong.
+StageOutput = _clip(64_000, keep_end=True)
+MAX_REPORTED_CONTAINERS = 2_000
+MAX_REPORTED_UPDATES = 20_000
+MAX_UPDATE_SOURCES = 16
+
+
 # ---------- Enrollment ----------
 class EnrollTokenCreate(BaseModel):
     hostname: Hostname
@@ -93,10 +115,10 @@ class EnrollTokenOut(BaseModel):
 
 
 class AgentEnrollRequest(BaseModel):
-    token: str
-    os_version: str
+    token: Text200
+    os_version: Text200
     os_family: Optional[Identifier] = ""  # e.g. "rocky8" — normalized key matching an OS-scripts folder
-    smbios_uuid: Optional[str] = ""  # from /sys/class/dmi/id/product_uuid — used to auto-resolve proxmox_vmid
+    smbios_uuid: Optional[Text200] = ""  # from /sys/class/dmi/id/product_uuid — used to auto-resolve proxmox_vmid
     poll_interval_seconds: Optional[int] = None
     proxmox_vmid: Optional[int] = None
 
@@ -107,13 +129,13 @@ class AgentEnrollResponse(BaseModel):
 
 
 class AgentSelfEnrollRequest(BaseModel):
-    secret: str  # shared enrollment secret — see KITE_ENROLL_SECRET
+    secret: Text500  # shared enrollment secret — see KITE_ENROLL_SECRET
     hostname: Hostname
     team: Label = ""
     role: Label = ""
-    os_version: str
+    os_version: Text200
     os_family: Optional[Identifier] = ""
-    smbios_uuid: Optional[str] = ""
+    smbios_uuid: Optional[Text200] = ""
     poll_interval_seconds: Optional[int] = None
     proxmox_vmid: Optional[int] = None
 
@@ -292,25 +314,25 @@ class AgentJobStageInstruction(BaseModel):
 
 
 class AgentStageReport(BaseModel):
-    status: str  # 'done' | 'failed'
-    output: str = ""
+    status: Text32  # 'done' | 'failed'
+    output: StageOutput = ""
 
 
 class AgentContainer(BaseModel):
     """One container as an agent observed it. Every field is
     agent-reported and therefore untrusted display data — nothing here
     is used for an authorization decision."""
-    container_id: str = ""
-    name: str
-    image: str
-    image_digest: str = ""
-    state: str = ""
-    managed_by: str = "standalone"
-    compose_project: str = ""
-    compose_service: str = ""
+    container_id: Text200 = ""
+    name: Text500
+    image: Text1000
+    image_digest: Text200 = ""
+    state: Text32 = ""
+    managed_by: Text32 = "standalone"
+    compose_project: Text500 = ""
+    compose_service: Text500 = ""
     # Where compose recorded the project. Without it there is no safe
     # update, so a container missing this is reported but never actioned.
-    compose_working_dir: str = ""
+    compose_working_dir: Text2000 = ""
     # Whether the host still holds a pre-update capture of this image.
     rollback_available: bool = False
     pinned: bool = False
@@ -320,18 +342,18 @@ class AgentContainer(BaseModel):
 
 
 class AgentPendingUpdate(BaseModel):
-    package: str
-    new_version: str = ""
-    advisory: str = ""
-    severity: str = "none"
+    package: Text500
+    new_version: Text200 = ""
+    advisory: Text500 = ""
+    severity: Text32 = "none"
     is_security: bool = False
     # Which manager reported this. 'os' (the default, and what every
     # agent before third-party support sent) or 'winget' / 'flatpak' /
     # 'snap'. See models.PendingUpdate.source.
-    source: str = "os"
+    source: Text32 = "os"
     # Installed version, where the source knows it. Blank for the OS
     # package managers, which report only the target.
-    current_version: str = ""
+    current_version: Text200 = ""
 
 
 class AgentUpdateSource(BaseModel):
@@ -345,9 +367,9 @@ class AgentUpdateSource(BaseModel):
     replaces a source's rows only when that source reported ok, and
     leaves the last known list in place for one that did not.
     """
-    name: str
+    name: Text32
     ok: bool
-    error: str = ""
+    error: Text500 = ""
 
 
 # ---------- Agent-reported network facts ----------
@@ -521,14 +543,14 @@ class AgentSoftware(BaseModel):
 
 
 class AgentInventory(BaseModel):
-    runtime: str = ""                      # 'docker' | 'podman' | 'nerdctl' | '' if none installed
+    runtime: Text32 = ""                   # 'docker' | 'podman' | 'nerdctl' | '' if none installed
     containers: List[AgentContainer] = []
     updates: List[AgentPendingUpdate] = []
     # Whether the assessment ran at all. False with an empty list means
     # "could not tell", which is not "nothing pending" -- see
     # models.PendingUpdate.
     updates_ok: Optional[bool] = None
-    updates_error: str = ""
+    updates_error: Text2000 = ""
     # Per-source assessment results. Empty from agents that predate
     # third-party support -- the controller then treats the report as a
     # single 'os' source gated by updates_ok, exactly as before.
@@ -545,7 +567,7 @@ class AgentInventory(BaseModel):
 
     @field_validator("containers", "updates", "update_sources", mode="before")
     @classmethod
-    def _empty_for_null(cls, value):
+    def _empty_for_null(cls, value, info):
         """
         Accept a JSON null for either list.
 
@@ -556,8 +578,15 @@ class AgentInventory(BaseModel):
         usually the one carrying updates_ok=false, so strictness would
         discard exactly the "I could not tell" signal the controller
         most needs to hear.
+
+        A list longer than any real host's is cut short for the same
+        reason, rather than the report being refused.
         """
-        return [] if value is None else value
+        limit = {"containers": MAX_REPORTED_CONTAINERS, "updates": MAX_REPORTED_UPDATES,
+                 "update_sources": MAX_UPDATE_SOURCES}[info.field_name]
+        if value is None:
+            return []
+        return value[:limit] if isinstance(value, list) else value
 
 
 class PendingUpdateOut(BaseModel):
@@ -710,6 +739,8 @@ class ScheduleCreate(BaseModel):
     scope: str = "os"
     containers: List[str] = []
     severity_filter: str = ""
+    # 'parallel' (every machine at once) or 'one_at_a_time' -- see models.Schedule.rollout
+    rollout: str = "parallel"
 
 
 class ScheduleUpdate(BaseModel):
@@ -722,6 +753,7 @@ class ScheduleUpdate(BaseModel):
     scope: Optional[str] = None
     containers: Optional[List[str]] = None
     severity_filter: Optional[str] = None
+    rollout: Optional[str] = None
 
 
 class ScheduleOut(BaseModel):
@@ -734,6 +766,7 @@ class ScheduleOut(BaseModel):
     hour: int
     enabled: bool
     ticket_id: Optional[str] = None
+    rollout: Optional[str] = "parallel"
     created_by: str
     last_fired_at: Optional[datetime] = None
 

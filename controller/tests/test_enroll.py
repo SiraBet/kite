@@ -154,3 +154,48 @@ def test_token_re_enroll_keeps_an_existing_link(client, logged_in, db):
     assert resp.status_code == 200, resp.text
     assert _host(db, hostname).proxmox_vmid == 4104
     assert len(_audited(db, "enroll_vmid_ignored", hostname)) == 1
+
+
+# ---------- a one-time token is redeemed once ----------
+
+def test_a_token_cannot_be_redeemed_twice_by_requests_arriving_together(client, logged_in, db):
+    """The token was marked used only after the host was written, so a second request
+    arriving in between passed the same check and got a credential of its own."""
+    from unittest.mock import patch
+    from app.routers import enroll as enroll_router
+
+    hostname = f"race-{uuid.uuid4().hex[:8]}"
+    logged_in(role="admin", username=f"race-admin-{uuid.uuid4().hex[:8]}")
+    token = client.post("/enroll/tokens", json={"hostname": hostname, "team": "", "role": ""}).json()["token"]
+    real_upsert, second = enroll_router._upsert_host, {}
+
+    def upsert_while_another_request_arrives(*args, **kwargs):
+        if not second:   # the first request is mid-way: a second one comes in with the same token
+            second["resp"] = client.post("/agent/enroll", json={"token": token, **_enroll_payload(hostname)})
+        return real_upsert(*args, **kwargs)
+
+    with patch.object(enroll_router, "_upsert_host", side_effect=upsert_while_another_request_arrives):
+        first = client.post("/agent/enroll", json={"token": token, **_enroll_payload(hostname)})
+
+    assert first.status_code == 200
+    assert second["resp"].status_code == 409
+
+
+def test_a_refused_enrollment_leaves_the_token_usable(client, logged_in, db):
+    """Refused because the hostname belongs to other hardware: nothing was issued, so the
+    token must still work on the machine it was made for."""
+    hostname = f"keep-token-{uuid.uuid4().hex[:8]}"
+    real, other = str(uuid.uuid4()), str(uuid.uuid4())
+    logged_in(role="admin", username=f"keep-admin-{uuid.uuid4().hex[:8]}")
+
+    def token():
+        return client.post("/enroll/tokens", json={"hostname": hostname, "team": "", "role": ""}).json()["token"]
+
+    first = token()
+    assert client.post("/agent/enroll", json={"token": first, **_enroll_payload(hostname),
+                                              "smbios_uuid": real}).status_code == 200
+    second = token()
+    wrong = client.post("/agent/enroll", json={"token": second, **_enroll_payload(hostname), "smbios_uuid": other})
+    assert wrong.status_code == 409 and "different hardware" in wrong.json()["detail"]
+    right = client.post("/agent/enroll", json={"token": second, **_enroll_payload(hostname), "smbios_uuid": real})
+    assert right.status_code == 200

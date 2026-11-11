@@ -1280,7 +1280,12 @@ class Agent:
         except requests.RequestException as e:
             return False, f"could not download the agent bundle: {e}"
         want_sum = (r.headers.get("X-Kite-Sha256") or "").lower()
-        if want_sum and hashlib.sha256(r.content).hexdigest() != want_sum:
+        if not want_sum:
+            # Required, as the Windows agent requires it: without one
+            # there is nothing to check the download against, and this
+            # replaces the code that runs as root on this host.
+            return False, "the controller didn't send a checksum with the bundle (controller too old?)"
+        if hashlib.sha256(r.content).hexdigest() != want_sum:
             return False, "the downloaded bundle doesn't match its checksum"
         try:
             with tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz") as tar:
