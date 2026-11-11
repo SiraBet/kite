@@ -132,7 +132,15 @@ def _send_email(db, action, detail):
     to = get_setting(db, "notify_smtp_to")
     if not host or not to:
         return
-    port = int(get_setting(db, "notify_smtp_port") or "587")
+    try:
+        port = int(get_setting(db, "notify_smtp_port") or "587")
+    except ValueError:
+        # Every audit entry passes through here. A port that isn't a
+        # number must cost this one email, not raise into whatever was
+        # being logged -- a failed stage, a batch moving on.
+        logger.warning("email notification skipped: notify_smtp_port %r is not a number",
+                       get_setting(db, "notify_smtp_port"))
+        return
     username = get_setting(db, "notify_smtp_username")
     password = get_secret(db, "notify_smtp_password")
     from_addr = get_setting(db, "notify_smtp_from") or username or "kite@localhost"
